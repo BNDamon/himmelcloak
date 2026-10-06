@@ -108,3 +108,21 @@ async fn rejects_untrusted_keycloak_certificate() {
     ));
     trace("himmelcloak rejected Keycloak without the trusted test CA");
 }
+
+#[tokio::test]
+#[ignore = "requires a live Keycloak server and test CA"]
+async fn rejects_keycloak_host_name_mismatch() {
+    let server = std::env::var("KEYCLOAK_URL").expect("KEYCLOAK_URL must be set for live tests");
+    let ca = std::env::var("KEYCLOAK_CA").expect("KEYCLOAK_CA must be set for live tests");
+    let mut url = url::Url::parse(&server).unwrap();
+    // The compose service name reaches the same Keycloak but is not in the certificate's SANs.
+    url.set_host(Some("keycloak")).unwrap();
+    let mut config =
+        Config::new(url.as_str(), "himmelcloak-test", "himmelcloak-test-client").unwrap();
+    config.ca_bundle = Some(PathBuf::from(ca));
+    assert!(matches!(
+        PublicClientApplication::with_config(config).await,
+        Err(Error::Transport(reason)) if reason.contains("SSL")
+    ));
+    trace("himmelcloak rejected Keycloak reached by a host name outside its certificate");
+}
