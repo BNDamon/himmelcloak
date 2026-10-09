@@ -1,7 +1,7 @@
 name: Resolve native dependency refs
 
-# Resolve moving upstream refs at run time. The normal build remains pinned to
-# wolfSSL v5.9.2-stable; this matrix catches compatibility drift.
+# Resolve moving upstream refs at run time. The normal build stays on the releases
+# pinned in scripts/build-native.sh; this matrix catches compatibility drift.
 on:
   workflow_call:
     outputs:

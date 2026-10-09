@@ -36,9 +36,10 @@ make test-live
 make oracle-down
 ```
 
-The test image builds wolfSSL 5.9.2 and wolfSSL-backed libcurl, imports a
+The test image builds the pinned wolfSSL stable release and wolfSSL-backed libcurl, imports a
 disposable realm into stock Keycloak, and runs the Rust client over HTTPS.
-On Linux with Rust 1.95 and the native build prerequisites installed:
+On Linux with the Rust toolchain pinned in `rust-toolchain.toml` and the native
+build prerequisites installed:
 
 ```sh
 make native

@@ -17,7 +17,7 @@ libcurl to report wolfSSL as its TLS backend. The Keycloak server URL must use
 HTTPS, including for a server on loopback; the browser callback URI may use
 loopback HTTP.
 
-The current wolfSSL 5.9.2 build verifies RS256 ID tokens with 2048-, 3072-,
+The pinned wolfSSL build verifies RS256 ID tokens with 2048-, 3072-,
 or 4096-bit RSA signing keys, and ES256 tokens with P-256 keys. Its configured
 RSA maximum is 4096 bits; realms using 8192-bit signing keys require a
 different native wolfSSL build and verifier configuration.

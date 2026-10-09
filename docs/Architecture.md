@@ -88,9 +88,13 @@ rejects its OTP parameter. Cargo features are additive; use
 
 The official `wolfssl-wolfcrypt` crate supplies the cryptographic primitives
 used by the core. The Rust `curl` crate drives libcurl, built with wolfSSL as
-its TLS backend. The native build pins wolfSSL v5.9.2-stable. Future optional
-modules can add wolfTPM, wolfHSM, wolfPKCS11, and wolfCOSE without coupling the
-baseline OIDC client to those devices.
+its TLS backend. The native build pins the latest stable wolfSSL and curl
+releases in `scripts/build-native.sh`, and Renovate opens a pull request when
+newer ones ship. himmelcloak supports only the pinned Rust toolchain, so its
+`rust-version` (the minimum supported Rust) moves with each toolchain update;
+those Renovate pull requests carry the `msrv` label. Future optional modules can
+add wolfTPM, wolfHSM, wolfPKCS11, and wolfCOSE without coupling the baseline
+OIDC client to those devices.
 
 A shared limit allows up to 32 concurrent libcurl transfers per process.
 Cancelling a queued request releases its slot; a running libcurl transfer
