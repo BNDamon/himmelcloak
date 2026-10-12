@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html class="" lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+
+    <title>Sign in to himmelcloak-test</title>
+        <link rel="icon" href="/resources/nh1u5/login/base/img/favicon.ico" />
+    <script type="importmap">
+        {
+            "imports": {
+                "rfc4648": "/resources/nh1u5/common/keycloak/vendor/rfc4648/rfc4648.js"
+            }
+        }
+    </script>
+    <script src="/resources/nh1u5/login/base/js/menu-button-links.js" type="module"></script>
+    <script type="module">
+        import { startSessionPolling } from "/resources/nh1u5/login/base/js/authChecker.js";
+
+        startSessionPolling(
+            "/realms/himmelcloak-test/login-actions/restart?client_id=himmelcloak-test-client&tab_id=FIXTURE&client_data=FIXTURE&skip_logout=true"
+        );
+    </script>
+    <script type="module">
+        document.addEventListener("click", (event) => {
+            const link = event.target.closest("a[data-once-link]");
+
+            if (!link) {
+                return;
+            }
+
+            if (link.getAttribute("aria-disabled") === "true") {
+                event.preventDefault();
+                return;
+            }
+
+            const { disabledClass } = link.dataset;
+
+            if (disabledClass) {
+                link.classList.add(...disabledClass.trim().split(/\s+/));
+            }
+
+            link.setAttribute("role", "link");
+            link.setAttribute("aria-disabled", "true");
+        });
+    </script>
+        <script type="module">
+            import { checkAuthSession } from "/resources/nh1u5/login/base/js/authChecker.js";
+
+            checkAuthSession(
+                "FIXTURE"
+            );
+        </script>
+<SCRIPT> if (typeof history.replaceState === 'function') {  history.replaceState({}, "some title", "https://keycloak.test:8443/realms/himmelcloak-test/login-actions/authenticate?execution=FIXTURE&client_id=himmelcloak-test-client&tab_id=FIXTURE&client_data=FIXTURE"); }</SCRIPT></head>
+
+<body class="" data-page-id="login-login-otp">
+<div class="">
+    <div id="kc-header" class="">
+        <div id="kc-header-wrapper"
+             class="">himmelcloak-test</div>
+    </div>
+    <div class="">
+        <header class="">
+                <div id="kc-username" class="">
+                    <label id="kc-attempted-username">otp-two</label>
+                    <a id="reset-login" href="/realms/himmelcloak-test/login-actions/restart?client_id=himmelcloak-test-client&amp;tab_id=FIXTURE&amp;client_data=FIXTURE&amp;skip_logout=false" aria-label="Restart login">
+                        <div class="kc-login-tooltip">
+                            <i class=""></i>
+                            <span class="kc-tooltip-text">Restart login</span>
+                        </div>
+                    </a>
+                </div>
+      </header>
+      <div id="kc-content">
+        <div id="kc-content-wrapper">
+
+
+        <form id="kc-otp-login-form" class="" onsubmit="login.disabled = true; return true;" action="https://keycloak.test:8443/realms/himmelcloak-test/login-actions/authenticate?session_code=FIXTURE&amp;execution=FIXTURE&amp;client_id=himmelcloak-test-client&amp;tab_id=FIXTURE&amp;client_data=FIXTURE"
+            method="post">
+                <div class="">
+                    <div class="">
+                            <input id="kc-otp-credential-0" class="" type="radio" name="selectedCredentialId" value="00000000-0000-4000-8000-000000000001" checked="checked">
+                            <label for="kc-otp-credential-0" class="" tabindex="0">
+                                <span class="">
+                                    <span class="">
+                                      <i class="" aria-hidden="true"></i>
+                                    </span>
+                                    <span class="">Phone</span>
+                                </span>
+                            </label>
+                            <input id="kc-otp-credential-1" class="" type="radio" name="selectedCredentialId" value="00000000-0000-4000-8000-000000000002" >
+                            <label for="kc-otp-credential-1" class="" tabindex="1">
+                                <span class="">
+                                    <span class="">
+                                      <i class="" aria-hidden="true"></i>
+                                    </span>
+                                    <span class="">Tablet</span>
+                                </span>
+                            </label>
+                    </div>
+                </div>
+
+            <div class="">
+                <div class="">
+                    <label for="otp" class="">One-time code</label>
+                </div>
+
+            <div class="">
+                <input id="otp" name="otp" autocomplete="one-time-code" type="text" class=""
+                       autofocus aria-invalid=""
+                       dir="ltr" />
+
+            </div>
+        </div>
+
+            <div class="">
+                <div id="kc-form-options" class="">
+                    <div class="">
+                    </div>
+                </div>
+
+                <div id="kc-form-buttons" class="">
+                    <input
+                        class="   "
+                        name="login" id="kc-login" type="submit" value="Sign In" />
+                </div>
+            </div>
+        </form>
+
+
+
+
+        </div>
+      </div>
+
+    </div>
+  </div>
+</body>
+</html>
