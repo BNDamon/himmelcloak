@@ -31,8 +31,8 @@ RUN curl --proto '=https' --tlsv1.2 -sSfo /tmp/rustup-init \
     && rm /tmp/rustup-init
 
 COPY scripts/build-native.sh /usr/local/bin/himmelcloak-build-native
-ARG WOLFSSL_REF=v5.9.2-stable
-ARG CURL_REF=curl-8_22_0
+ARG WOLFSSL_REF=
+ARG CURL_REF=
 WORKDIR /tmp/himmelcloak-build
 # This GCC does not default to PIE, but Rust links PIE executables against these archives.
 RUN CFLAGS=-fPIC WOLFSSL_REF="$WOLFSSL_REF" CURL_REF="$CURL_REF" \

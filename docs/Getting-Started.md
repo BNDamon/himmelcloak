@@ -13,15 +13,16 @@ make test-live
 make oracle-down
 ```
 
-This builds a Rust 1.95 test image with wolfSSL 5.9.2 and the `curl` crate linked to a wolfSSL-backed
-libcurl. It generates a local test CA, starts stock Keycloak with the seeded realm, and runs real
-HTTPS login tests. `KEYCLOAK_IMAGE=quay.io/keycloak/keycloak:nightly make test-live` selects the
-nightly server. CI resolves the latest stable Keycloak release and the nightly image to exact
-image digests at run time, then requires both to pass on every push and PR.
+This builds a test image with the pinned Rust toolchain, the pinned wolfSSL stable release, and the
+`curl` crate linked to a wolfSSL-backed libcurl. It generates a local test CA, starts stock
+Keycloak with the seeded realm, and runs real HTTPS login tests.
+`KEYCLOAK_IMAGE=quay.io/keycloak/keycloak:nightly make test-live` selects the nightly server. CI
+resolves the latest stable Keycloak release and the nightly image to exact image digests at run
+time, then requires both to pass on every push and PR.
 
 On Linux, `make native` builds the same native libraries into `.native`. `make build`, `make test`,
 and `make lint` use them. The local build requires Autotools, libtool, pkg-config, clang, and a
-Rust 1.95 toolchain. Plain `cargo test` skips the ignored live tests;
+Rust toolchain from `rust-toolchain.toml`. Plain `cargo test` skips the ignored live tests;
 `make test` runs unit tests plus the local integration and contract tests. Use `make test-live` for Keycloak.
 The Linux native build links wolfSSL and libcurl statically so locally built
 applications can run without setting a library search path. Rebuild a prefix

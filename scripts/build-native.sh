@@ -19,8 +19,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 set -euo pipefail
 
-WOLFSSL_REF=${WOLFSSL_REF:-v5.9.2-stable}
-CURL_REF=${CURL_REF:-curl-8_22_0}
+# Pinned stable releases. Renovate bumps each tag and its commit together (renovate.json).
+PINNED_WOLFSSL_REF=v5.9.4-stable PINNED_WOLFSSL_COMMIT=3c5eead44904df64e6a5a1f4ebdce377d35a849a
+PINNED_CURL_REF=curl-8_22_0 PINNED_CURL_COMMIT=01346829096c61b372692f6dc43ffa778c6caccd
+WOLFSSL_REF=${WOLFSSL_REF:-$PINNED_WOLFSSL_REF}
+CURL_REF=${CURL_REF:-$PINNED_CURL_REF}
 WOLFSSL_COMMIT=${WOLFSSL_COMMIT:-}
 CURL_COMMIT=${CURL_COMMIT:-}
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -49,15 +52,15 @@ resolve_commit() {
 }
 
 if [[ -z "$WOLFSSL_COMMIT" ]]; then
-    if [[ "$WOLFSSL_REF" == v5.9.2-stable ]]; then
-        WOLFSSL_COMMIT=ac01707f552c611fbd135cc723b2682b3e7f80f2
+    if [[ "$WOLFSSL_REF" == "$PINNED_WOLFSSL_REF" ]]; then
+        WOLFSSL_COMMIT=$PINNED_WOLFSSL_COMMIT
     else
         WOLFSSL_COMMIT=$(resolve_commit https://github.com/wolfSSL/wolfssl.git "$WOLFSSL_REF")
     fi
 fi
 if [[ -z "$CURL_COMMIT" ]]; then
-    if [[ "$CURL_REF" == curl-8_22_0 ]]; then
-        CURL_COMMIT=01346829096c61b372692f6dc43ffa778c6caccd
+    if [[ "$CURL_REF" == "$PINNED_CURL_REF" ]]; then
+        CURL_COMMIT=$PINNED_CURL_COMMIT
     else
         CURL_COMMIT=$(resolve_commit https://github.com/curl/curl.git "$CURL_REF")
     fi

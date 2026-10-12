@@ -21,8 +21,8 @@ development image on every push and PR. CI resolves both image digests before
 starting the matrix, so a run records exactly which server builds it tested.
 The separate native dependency matrix resolves current stable and development
 refs to commit IDs before building wolfSSL and curl. The standard image uses
-fixed commits for wolfSSL 5.9.2 and curl 8.22.0. The image records both refs
-and commits in `/opt/himmelcloak-native/.himmelcloak-refs`.
+the wolfSSL and curl release commits pinned in `scripts/build-native.sh`. The image records
+both refs and commits in `/opt/himmelcloak-native/.himmelcloak-refs`.
 Each new login factor must add a live scenario before its feature is treated as
 complete.
 

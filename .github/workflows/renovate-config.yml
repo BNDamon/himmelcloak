@@ -1,0 +1,28 @@
+name: Renovate config
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: renovate-config-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Renovate config and pin extraction
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - name: Validate renovate.json as repository config
+        run: npx --yes --package renovate@44.149.0 -- renovate-config-validator --no-global --strict renovate.json
+      - name: Every pin is still found by its manager
+        run: python3 scripts/check-renovate-pins.py
+      - name: Pin checker tests
+        run: python3 -m unittest discover -s tests/ci -v

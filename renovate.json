@@ -1,0 +1,92 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Bumps the pins Dependabot cannot see: native C libraries and the Rust toolchain. Dependabot keeps cargo crates and GitHub Actions.",
+  "extends": [
+    "config:recommended"
+  ],
+  "enabledManagers": [
+    "custom.regex"
+  ],
+  "ignorePaths": [],
+  "schedule": [
+    "before 6am on monday"
+  ],
+  "prConcurrentLimit": 3,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "wolfSSL stable release tag and its commit",
+      "managerFilePatterns": [
+        "/^scripts/build-native\\.sh$/"
+      ],
+      "matchStrings": [
+        "PINNED_WOLFSSL_REF=(?<currentValue>v\\d+\\.\\d+\\.\\d+-stable) PINNED_WOLFSSL_COMMIT=(?<currentDigest>[0-9a-f]{40})"
+      ],
+      "depNameTemplate": "wolfssl",
+      "packageNameTemplate": "https://github.com/wolfSSL/wolfssl.git",
+      "datasourceTemplate": "git-tags",
+      "versioningTemplate": "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)-stable$"
+    },
+    {
+      "customType": "regex",
+      "description": "curl release tag and its commit",
+      "managerFilePatterns": [
+        "/^scripts/build-native\\.sh$/"
+      ],
+      "matchStrings": [
+        "PINNED_CURL_REF=(?<currentValue>curl-\\d+_\\d+_\\d+) PINNED_CURL_COMMIT=(?<currentDigest>[0-9a-f]{40})"
+      ],
+      "depNameTemplate": "curl",
+      "packageNameTemplate": "https://github.com/curl/curl.git",
+      "datasourceTemplate": "git-tags",
+      "versioningTemplate": "regex:^curl-(?<major>\\d+)_(?<minor>\\d+)_(?<patch>\\d+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "Rust toolchain pins",
+      "managerFilePatterns": [
+        "/^rust-toolchain\\.toml$/",
+        "/^Cargo\\.toml$/",
+        "/^tests/build/Dockerfile$/",
+        "/^\\.github/docker/himmelcloak-ci/Dockerfile\\.[a-z]+$/"
+      ],
+      "matchStrings": [
+        "channel = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
+        "rust-version = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
+        "FROM rust:(?<currentValue>\\d+\\.\\d+\\.\\d+)-bookworm",
+        "--toolchain (?<currentValue>\\d+\\.\\d+\\.\\d+)",
+        "--default-toolchain (?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "rust",
+      "packageNameTemplate": "rust-lang/rust",
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "Renovate version the config check validates with",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/renovate-config\\.yml$/"
+      ],
+      "matchStrings": [
+        "renovate@(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "renovate",
+      "datasourceTemplate": "npm"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchDepNames": [
+        "rust"
+      ],
+      "groupName": "Rust toolchain",
+      "labels": [
+        "msrv"
+      ],
+      "prBodyNotes": [
+        "himmelcloak supports only the pinned Rust toolchain, so this also raises the minimum supported Rust (`rust-version`) for every crate."
+      ]
+    }
+  ]
+}

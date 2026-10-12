@@ -19,8 +19,8 @@ feature assignments, not fixed roles that all six people must work on at once.
 
 ## Core sequence
 
-1. **Foundation:** keep the crate standalone, pin wolfSSL v5.9.2-stable and
-   the official `wolfssl-wolfcrypt` crate, build libcurl with wolfSSL, and
+1. **Foundation:** keep the crate standalone, pin the latest stable wolfSSL
+   release and the official `wolfssl-wolfcrypt` crate, build libcurl with wolfSSL, and
    implement OIDC discovery, JWKS, ID-token verification, Direct Access Grant,
    refresh, revocation, and userinfo. Seed stock Keycloak in Docker and require
    live login plus a rejected-login and TLS failure case in CI. Document exactly
@@ -50,9 +50,9 @@ feature assignments, not fixed roles that all six people must work on at once.
 Every push and PR runs formatting, lint, unit tests, and a real HTTPS login
 suite against resolved Keycloak stable and `nightly` image digests. A separate
 matrix resolves current stable and development refs for wolfSSL and curl. The
-standard native test image uses the pinned wolfSSL 5.9.2 baseline. A new auth feature is only
-complete when the stock Keycloak oracle demonstrates its successful and
-rejected paths. Hardware-dependent tests can add an emulator gate and a
+standard native test image uses the pinned wolfSSL stable release. A new auth
+feature is only complete when the stock Keycloak oracle demonstrates its
+successful and rejected paths. Hardware-dependent tests can add an emulator gate and a
 separate physical-device gate when that feature arrives; neither substitutes
 for the Keycloak end-to-end suite.
 

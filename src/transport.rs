@@ -524,10 +524,10 @@ mod tests {
 
     #[test]
     fn only_the_active_wolfssl_backend_is_accepted() {
-        assert!(active_wolfssl("wolfSSL/5.9.2"));
-        assert!(active_wolfssl("(OpenSSL/3.0.8) wolfSSL/5.9.2"));
-        assert!(!active_wolfssl("OpenSSL/3.0.8 (wolfSSL/5.9.2)"));
-        assert!(!active_wolfssl("(wolfSSL/5.9.2) OpenSSL/3.0.8"));
+        assert!(active_wolfssl("wolfSSL/5.9.4"));
+        assert!(active_wolfssl("(OpenSSL/3.0.8) wolfSSL/5.9.4"));
+        assert!(!active_wolfssl("OpenSSL/3.0.8 (wolfSSL/5.9.4)"));
+        assert!(!active_wolfssl("(wolfSSL/5.9.4) OpenSSL/3.0.8"));
     }
 
     #[test]
