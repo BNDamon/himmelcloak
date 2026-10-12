@@ -42,44 +42,51 @@ pub(crate) fn advance(_flow: &mut AuthFlow, _answer: Answer) -> Result<AuthStep>
     Err(Error::NotImplemented)
 }
 
-/// The authorization response from Keycloak's final redirect to the registered callback.
+/// The authorization code from Keycloak's final redirect to the registered callback, after its
+/// `state` was checked against the one this login sent.
 pub(crate) struct Callback {
     pub code: String,
-    pub state: String,
 }
 
 impl Drop for Callback {
     fn drop(&mut self) {
         self.code.zeroize();
-        self.state.zeroize();
     }
 }
 
 impl fmt::Debug for Callback {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // The code is a one-time credential and the state binds it to this login.
+        // The code is a one-time credential.
         f.debug_struct("Callback").finish_non_exhaustive()
     }
 }
 
-/// If `redirect` is Keycloak's redirect to the registered callback, return its code and state.
+/// If `redirect` is Keycloak's redirect to the registered callback, return its code.
 ///
 /// The callback is never fetched: this takes no transport, so recognising it cannot send a
 /// request. That is why `fetch` can stay HTTPS-only while the registered callback is loopback
 /// HTTP. Any other redirect returns `Ok(None)` for the driver to handle or deny.
-pub(crate) fn callback(redirect: &Redirect, redirect_uri: &Url) -> Result<Option<Callback>> {
+///
+/// Every callback, including an error response, must carry the `state` this login sent
+/// (`expected_state`) before anything else in it is trusted (RFC 6749 sections 4.1.2 and
+/// 4.1.2.1). Only `error=access_denied` is a rejection; any other error is a protocol fault.
+pub(crate) fn callback(
+    redirect: &Redirect,
+    redirect_uri: &Url,
+    expected_state: &str,
+) -> Result<Option<Callback>> {
     let location = &redirect.location;
     if !same_endpoint(location, redirect_uri) {
         return Ok(None);
     }
     let mut code = None;
     let mut state = None;
+    let mut error = None;
     for (name, value) in location.query_pairs() {
         let slot = match name.as_ref() {
             "code" => &mut code,
             "state" => &mut state,
-            // Keycloak reports a denied or failed login as `error=...` on the callback.
-            "error" => return Err(Error::AuthenticationRejected),
+            "error" => &mut error,
             _ => continue,
         };
         // Wrap the decoded value at once, so it is wiped on every path, including the early
@@ -90,15 +97,27 @@ pub(crate) fn callback(redirect: &Redirect, redirect_uri: &Url) -> Result<Option
             return Err(Error::Protocol("repeated callback parameter"));
         }
     }
-    match (code, state) {
-        (Some(mut code), Some(mut state)) if !code.is_empty() && !state.is_empty() => {
-            // Move the values out instead of copying them, so no unscrubbed copy exists.
-            Ok(Some(Callback {
-                code: std::mem::take(&mut *code),
-                state: std::mem::take(&mut *state),
-            }))
-        }
-        _ => Err(Error::Protocol("callback without code or state")),
+    // The state proves this response belongs to this login; without it, anyone able to trigger a
+    // redirect could end or hijack the flow.
+    let state_matches = state
+        .as_ref()
+        .is_some_and(|state| !expected_state.is_empty() && state.as_str() == expected_state);
+    if !state_matches {
+        return Err(Error::Protocol("callback state mismatch"));
+    }
+    if let Some(error) = error {
+        // Only the user or Keycloak refusing the login is a rejection; anything else is a fault.
+        return Err(match error.as_str() {
+            "access_denied" => Error::AuthenticationRejected,
+            _ => Error::Protocol("authorization error on callback"),
+        });
+    }
+    match code {
+        // Move the value out instead of copying it, so no unscrubbed copy exists.
+        Some(mut code) if !code.is_empty() => Ok(Some(Callback {
+            code: std::mem::take(&mut *code),
+        })),
+        _ => Err(Error::Protocol("callback without code")),
     }
 }
 
@@ -116,11 +135,12 @@ fn same_endpoint(location: &Url, expected: &Url) -> bool {
 mod tests {
     use url::Url;
 
-    use super::callback;
-    use crate::error::Error;
+    use super::{callback, Callback};
+    use crate::error::{Error, Result};
     use crate::flow::fetch::{Redirect, RedirectKind};
 
     const CALLBACK: &str = "http://127.0.0.1:8845/himmelcloak/callback";
+    const STATE: &str = "synthetic-state";
 
     fn registered() -> Url {
         Url::parse(CALLBACK).unwrap()
@@ -134,15 +154,47 @@ mod tests {
         }
     }
 
+    fn at_callback(query: &str) -> Result<Option<Callback>> {
+        callback(
+            &redirect_to(&format!("{CALLBACK}?{query}")),
+            &registered(),
+            STATE,
+        )
+    }
+
     #[test]
-    fn registered_callback_yields_code_and_state() {
-        let location =
-            format!("{CALLBACK}?state=synthetic-state&session_state=other&code=synthetic-code");
-        let found = callback(&redirect_to(&location), &registered())
+    fn registered_callback_yields_the_code() {
+        let found = at_callback("state=synthetic-state&session_state=other&code=synthetic-code")
             .unwrap()
             .expect("the registered callback");
         assert_eq!(found.code, "synthetic-code");
-        assert_eq!(found.state, "synthetic-state");
+    }
+
+    #[test]
+    fn a_missing_or_wrong_state_is_refused_even_on_errors() {
+        for query in [
+            "code=c&state=other-state",
+            "code=c&state=",
+            "code=c",
+            "error=access_denied&state=other-state",
+            "error=access_denied",
+        ] {
+            assert_eq!(
+                at_callback(query).err(),
+                Some(Error::Protocol("callback state mismatch")),
+                "{query}"
+            );
+        }
+        // An empty expected state never matches, even an empty returned one.
+        assert_eq!(
+            callback(
+                &redirect_to(&format!("{CALLBACK}?code=c&state=")),
+                &registered(),
+                ""
+            )
+            .err(),
+            Some(Error::Protocol("callback state mismatch"))
+        );
     }
 
     #[test]
@@ -157,7 +209,7 @@ mod tests {
             "https://keycloak.test:8443/realms/test/login-actions/required-action",
         ] {
             assert!(
-                callback(&redirect_to(location), &registered())
+                callback(&redirect_to(location), &registered(), "s")
                     .unwrap()
                     .is_none(),
                 "{location} must not count as the callback"
@@ -166,30 +218,48 @@ mod tests {
     }
 
     #[test]
-    fn login_errors_on_the_callback_are_rejections() {
-        let location = format!("{CALLBACK}?error=access_denied&state=synthetic-state");
+    fn only_access_denied_is_a_rejection() {
         assert_eq!(
-            callback(&redirect_to(&location), &registered()).err(),
+            at_callback("error=access_denied&state=synthetic-state").err(),
             Some(Error::AuthenticationRejected)
         );
+        for query in [
+            "error=server_error&state=synthetic-state",
+            "error=temporarily_unavailable&state=synthetic-state",
+            "error=&state=synthetic-state",
+        ] {
+            assert_eq!(
+                at_callback(query).err(),
+                Some(Error::Protocol("authorization error on callback")),
+                "{query}"
+            );
+        }
     }
 
     #[test]
     fn malformed_callbacks_are_protocol_errors() {
         for (query, reason) in [
-            ("state=s", "callback without code or state"),
-            ("code=c", "callback without code or state"),
-            ("code=&state=s", "callback without code or state"),
-            ("code=c&code=d&state=s", "repeated callback parameter"),
+            ("state=synthetic-state", "callback without code"),
+            ("code=&state=synthetic-state", "callback without code"),
             (
-                "code=a&code=b%2Fsecret&state=s",
+                "code=c&code=d&state=synthetic-state",
                 "repeated callback parameter",
             ),
-            ("code=c&state=s&state=t", "repeated callback parameter"),
+            (
+                "code=a&code=b%2Fsecret&state=synthetic-state",
+                "repeated callback parameter",
+            ),
+            (
+                "code=c&state=synthetic-state&state=t",
+                "repeated callback parameter",
+            ),
+            (
+                "error=access_denied&error=server_error&state=synthetic-state",
+                "repeated callback parameter",
+            ),
         ] {
-            let location = format!("{CALLBACK}?{query}");
             assert_eq!(
-                callback(&redirect_to(&location), &registered()).err(),
+                at_callback(query).err(),
                 Some(Error::Protocol(reason)),
                 "{query}"
             );
@@ -197,9 +267,8 @@ mod tests {
     }
 
     #[test]
-    fn debug_output_never_shows_the_code_or_state() {
-        let location = format!("{CALLBACK}?code=synthetic-code&state=synthetic-state");
-        let found = callback(&redirect_to(&location), &registered())
+    fn debug_output_never_shows_the_code() {
+        let found = at_callback("code=synthetic-code&state=synthetic-state")
             .unwrap()
             .unwrap();
         assert_eq!(format!("{found:?}"), "Callback { .. }");
