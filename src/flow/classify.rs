@@ -391,8 +391,10 @@ mod tests {
     const V2_DEVICES: &str =
         include_str!("../../tests/fixtures/keycloak/keycloak.v2/login-otp-devices.html");
 
-    const PHONE: &str = "00000000-0000-4000-8000-000000000001";
-    const TABLET: &str = "00000000-0000-4000-8000-000000000002";
+    /// carol's two devices from the charter's fixture realm (Table 23).
+    const TOTP_DEVICE: &str = "00000000-0000-4000-8000-000000000001";
+    const HOTP_DEVICE: &str = "00000000-0000-4000-8000-000000000002";
+    const TOTP_LABEL: &str = "Authenticator app";
 
     fn kind(html: &str) -> PageKind {
         classify(html.as_bytes())
@@ -434,8 +436,8 @@ mod tests {
     #[test]
     fn device_choices_in_both_themes() {
         let expected = vec![
-            (PHONE.to_owned(), "Phone".to_owned()),
-            (TABLET.to_owned(), "Tablet".to_owned()),
+            (TOTP_DEVICE.to_owned(), TOTP_LABEL.to_owned()),
+            (HOTP_DEVICE.to_owned(), "Hardware token".to_owned()),
         ];
         assert_eq!(devices(BASE_DEVICES), expected);
         assert_eq!(devices(V2_DEVICES), expected);
@@ -552,11 +554,10 @@ mod tests {
 
     #[test]
     fn device_labels_survive_nested_markup() {
-        let page = V2_DEVICES.replace(
-            r#"<span class="pf-v5-c-tile__title">Phone</span>"#,
-            r#"<div><div><span class="pf-v5-c-tile__title">Phone</span></div></div>"#,
-        );
-        assert_eq!(devices(&page)[0].1, "Phone");
+        let title = format!(r#"<span class="pf-v5-c-tile__title">{TOTP_LABEL}</span>"#);
+        assert!(V2_DEVICES.contains(&title));
+        let page = V2_DEVICES.replace(&title, &format!("<div><div>{title}</div></div>"));
+        assert_eq!(devices(&page)[0].1, TOTP_LABEL);
     }
 
     #[test]
@@ -596,9 +597,11 @@ mod tests {
 
     #[test]
     fn device_labels_lose_terminal_control_characters() {
-        let page = V2_DEVICES.replace(">Phone<", ">Pho\u{1b}[31mne\u{202e}\n  1<");
+        let title = format!(">{TOTP_LABEL}<");
+        assert!(V2_DEVICES.contains(&title));
+        let page = V2_DEVICES.replace(&title, ">Pho\u{1b}[31mne\u{202e}\n  1<");
         assert_eq!(devices(&page)[0].1, "Pho[31mne 1");
-        let blank = V2_DEVICES.replace(">Phone<", ">\u{7}\u{200b}<");
+        let blank = V2_DEVICES.replace(&title, ">\u{7}\u{200b}<");
         assert!(is_unknown(&blank));
     }
 }

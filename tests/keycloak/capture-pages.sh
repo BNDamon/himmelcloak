@@ -19,9 +19,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Capture Keycloak login pages as page-classifier fixtures, in the base and
-# keycloak.v2 login themes. Run `make oracle-up` first. The script adds two
-# disposable OTP users to the running test realm only; realm-export.json is
-# not changed. Session-specific values are replaced with placeholders.
+# keycloak.v2 login themes. Run `make oracle-up` first. The script adds the
+# charter's bob and carol OTP users to the running test realm only;
+# realm-export.json is not changed. Session-specific values are replaced with
+# placeholders.
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
@@ -50,21 +51,23 @@ admin() {
         -H 'Content-Type: application/json' --data-binary @- "$kc/admin/realms/$realm$path"
 }
 
+# One OTP credential as "label:subType:digits:algorithm".
 otp_credential() {
     # Keycloak only renders the page; these secrets never produce a usable code.
     python3 -c 'import json, sys
-print(json.dumps({"type": "otp", "userLabel": sys.argv[1],
-    "secretData": json.dumps({"value": "fixture-secret-" + sys.argv[1]}),
-    "credentialData": json.dumps({"subType": "totp", "digits": 6, "counter": 0,
-                                  "period": 30, "algorithm": "HmacSHA1"})}))' "$1"
+label, sub_type, digits, algorithm = sys.argv[1].split(":")
+print(json.dumps({"type": "otp", "userLabel": label,
+    "secretData": json.dumps({"value": "fixture-secret-" + label.replace(" ", "-")}),
+    "credentialData": json.dumps({"subType": sub_type, "digits": int(digits), "counter": 0,
+                                  "period": 30, "algorithm": algorithm})}))' "$1"
 }
 
 otp_user() {
     local name=$1 credentials
     shift
     credentials="{\"type\":\"password\",\"value\":\"$password\",\"temporary\":false}"
-    for label in "$@"; do
-        credentials+=",$(otp_credential "$label")"
+    for spec in "$@"; do
+        credentials+=",$(otp_credential "$spec")"
     done
     printf '{"username":"%s","enabled":true,"emailVerified":true,"firstName":"%s",' "$name" "$name"
     printf '"lastName":"Fixture","email":"%s@example.invalid","credentials":[%s]}' "$name" "$credentials"
@@ -106,18 +109,21 @@ capture() {
 }
 
 mkdir -p "$out_dir/base" "$out_dir/keycloak.v2"
+# The one-time-code users from the charter's test realm (Table 23): bob has one TOTP device;
+# carol has TOTP (SHA-256, 8 digits) and HOTP (the charter leaves HOTP settings open, so it
+# uses Keycloak's defaults).
 {
     printf '{"ifResourceExists":"OVERWRITE","users":['
-    otp_user otp-one Phone
+    otp_user bob "Authenticator app:totp:6:HmacSHA1"
     printf ','
-    otp_user otp-two Phone Tablet
+    otp_user carol "Authenticator app:totp:8:HmacSHA256" "Hardware token:hotp:6:HmacSHA1"
     printf ']}'
 } | admin POST /partialImport > /dev/null
 
 for theme in keycloak.v2 base; do
     printf '{"loginTheme":"%s"}' "$theme" | admin PUT "" > /dev/null
-    capture "$theme" otp-one login-otp.html
-    capture "$theme" otp-two login-otp-devices.html
+    capture "$theme" bob login-otp.html
+    capture "$theme" carol login-otp-devices.html
     echo "captured $theme"
 done
 
