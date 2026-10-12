@@ -12,7 +12,7 @@ all-features: native
 	scripts/with-native.sh cargo build --locked --workspace --all-features
 
 test: native
-	scripts/with-native.sh cargo test --locked --workspace --lib
+	scripts/with-native.sh cargo test --locked --workspace --tests
 
 pam-smoke:
 	bash crates/pam_himmelcloak/tests/pam-load-smoke.sh "$(CURDIR)"

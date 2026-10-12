@@ -27,9 +27,23 @@ optional Keycloak configuration, so it cannot serve as the only login path.
 The next core component will initiate Keycloak's authorization-code flow with
 PKCE, preserve its session cookies, classify the returned challenge, accept a
 typed answer, and exchange the final code for tokens. The caller owns the user
-conversation; the library owns protocol state and response validation. The
-existing `AuthFlow`, `Challenge`, `Answer`, and `AuthStep` types reserve this
-API shape, but `initiate_auth_flow` and `continue_auth_flow` currently return
+conversation; the library owns protocol state and response validation.
+
+The challenge/answer contract in `src/flow/mod.rs` fixes that conversation.
+Each Keycloak login page yields a `Challenge` (username, password, one-time
+code with its device list, recovery code, WebAuthn, method choice, required
+action, or info), and the caller replies with the matching `Answer`. On the
+combined username-and-password page the username comes from `Start::login_hint`;
+without one the flow asks `Username`, then `Password`, and posts the form once.
+Required actions carry their display text and fields; actions that need
+browser-only setup, such as configuring an authenticator app, are unsupported. Each
+`AuthStep` is another challenge, `Complete` with tokens, or `Failed` with
+Keycloak's message. `Challenge::input()` tells the caller whether to hide or
+show what the user types. An `AuthFlow` is single-use: `cancel()`, a
+30-minute time limit, or completion ends it, wipes its cookies, and makes
+every later step fail with `Cancelled`, `Expired`, or a protocol error. The
+driver checks this before every step. Only `initiate_auth_flow` creates a flow.
+`initiate_auth_flow` and `continue_auth_flow` otherwise still return
 `NotImplemented`.
 
 Page fetching (`src/flow/fetch.rs`) is in place beneath the driver. Each

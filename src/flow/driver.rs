@@ -27,11 +27,13 @@ use crate::error::{Error, Result};
 use crate::flow::{Answer, AuthFlow, AuthStep};
 
 /// Fetch + classify the current step (the challenge to present, or completion).
-pub(crate) fn step(_flow: &mut AuthFlow) -> Result<AuthStep> {
+pub(crate) fn step(flow: &mut AuthFlow) -> Result<AuthStep> {
+    flow.ensure_active()?;
     Err(Error::NotImplemented)
 }
 
 /// Post the caller's answer to the current authenticator and advance.
-pub(crate) fn advance(_flow: &mut AuthFlow, _answer: Answer) -> Result<AuthStep> {
+pub(crate) fn advance(flow: &mut AuthFlow, _answer: Answer) -> Result<AuthStep> {
+    flow.ensure_active()?;
     Err(Error::NotImplemented)
 }

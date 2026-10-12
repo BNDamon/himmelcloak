@@ -47,7 +47,7 @@ jobs:
         run: |
           docker run --rm himmelcloak-tester:ci cat /opt/himmelcloak-native/.himmelcloak-refs
           docker run --rm himmelcloak-tester:ci sh -c 'grep LIBWOLFSSL_VERSION_STRING /opt/himmelcloak-native/include/wolfssl/version.h; /opt/himmelcloak-native/bin/curl-config --version; /opt/himmelcloak-native/bin/curl-config --ssl-backends'
-      - name: Build all features and run unit tests
+      - name: Build all features and run unit and contract tests
         run: |
           docker run --rm -v "$PWD:/work" -v himmelcloak-cargo-target:/tmp/himmelcloak-target -e CARGO_TARGET_DIR=/tmp/himmelcloak-target -w /work himmelcloak-tester:ci cargo build --locked --workspace --all-features
-          docker run --rm -v "$PWD:/work" -v himmelcloak-cargo-target:/tmp/himmelcloak-target -e CARGO_TARGET_DIR=/tmp/himmelcloak-target -w /work himmelcloak-tester:ci cargo test --locked --workspace --lib
+          docker run --rm -v "$PWD:/work" -v himmelcloak-cargo-target:/tmp/himmelcloak-target -e CARGO_TARGET_DIR=/tmp/himmelcloak-target -w /work himmelcloak-tester:ci cargo test --locked --workspace --tests

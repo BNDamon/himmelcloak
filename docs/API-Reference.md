@@ -45,6 +45,17 @@ that needs operator attention.
 The method returns `UnsupportedFactor` when the `password` feature is disabled
 or a TOTP value is supplied without the `totp` feature.
 
-The public `AuthFlow`, `AuthStep`, `Challenge`, and `Answer` types reserve the resumable native
-flow API. `initiate_auth_flow` and `continue_auth_flow` are still under construction and currently
-return `NotImplemented`.
+The browser-free login is a loop: each `AuthStep` is a `Challenge` to show the user, `Complete`
+with tokens, or `Failed` with Keycloak's message. The caller answers each `Challenge` with the
+matching `Answer` and uses `Challenge::input()` to decide whether the prompt hides or shows what
+the user types (`Input::Hidden`, `Input::Visible`, or `Input::None`). A required action returns
+`Input::Form`: each of its `fields` says whether its input is secret, and the answer gives one value per field. Secret answers are wiped from
+memory when dropped. `AuthFlow::cancel()` ends a login, and a login expires after
+`DEFAULT_LOGIN_TIMEOUT` (30 minutes, Keycloak's default login timeout); after either, every step returns `Cancelled` or `Expired`.
+`initiate_auth_flow` and `continue_auth_flow` are still under construction and currently return
+`NotImplemented` for an active login.
+
+These types replace the earlier placeholders, which had no callers: `Challenge::Totp` and
+`Answer::Totp` became `OneTimeCode`, the SMS and email variants were removed until those
+Priority 2 factors are built, and `AuthFlow::default()` is gone because only
+`initiate_auth_flow` creates a flow.

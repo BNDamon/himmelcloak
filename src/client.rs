@@ -24,7 +24,7 @@ use serde_json::Value;
 
 use crate::config::Config;
 use crate::error::{Error, Result};
-use crate::flow::{Answer, AuthFlow, AuthStep, Tokens};
+use crate::flow::{driver, Answer, AuthFlow, AuthStep, Tokens};
 use crate::sensitive_json::SensitiveClaims;
 use crate::standard;
 use crate::token::{self, Metadata};
@@ -238,10 +238,10 @@ impl PublicClientApplication {
 
     pub async fn continue_auth_flow(
         &self,
-        _flow: &mut AuthFlow,
-        _answer: Answer,
+        flow: &mut AuthFlow,
+        answer: Answer,
     ) -> Result<AuthStep> {
-        Err(Error::NotImplemented)
+        driver::advance(flow, answer)
     }
 }
 
@@ -258,6 +258,7 @@ mod tests {
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::{Arc, Mutex, RwLock};
+    use std::time::Duration;
 
     use serde_json::{json, Value};
     use url::Url;
@@ -266,6 +267,7 @@ mod tests {
     use crate::config::Config;
     use crate::error::{Error, Result};
     use crate::flow::Tokens;
+    use crate::flow::{Answer, AuthFlow, DEFAULT_LOGIN_TIMEOUT};
     use crate::token::Metadata;
     use crate::transport::{HttpTransport, Request, Response};
 
@@ -496,6 +498,35 @@ mod tests {
                 .await
                 .err(),
             Some(Error::UnsupportedFactor)
+        );
+    }
+
+    fn password() -> Answer {
+        Answer::Password("correct-horse-battery-staple".to_owned())
+    }
+
+    #[tokio::test]
+    async fn continue_rejects_a_cancelled_login() {
+        let client = app(json!({}), vec![]);
+        let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT);
+        assert_eq!(
+            client.continue_auth_flow(&mut flow, password()).await.err(),
+            Some(Error::NotImplemented)
+        );
+        flow.cancel();
+        assert_eq!(
+            client.continue_auth_flow(&mut flow, password()).await.err(),
+            Some(Error::Cancelled)
+        );
+    }
+
+    #[tokio::test]
+    async fn continue_rejects_an_expired_login() {
+        let client = app(json!({}), vec![]);
+        let mut flow = AuthFlow::new(Duration::ZERO);
+        assert_eq!(
+            client.continue_auth_flow(&mut flow, password()).await.err(),
+            Some(Error::Expired)
         );
     }
 

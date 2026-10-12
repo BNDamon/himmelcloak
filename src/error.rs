@@ -33,6 +33,8 @@ pub enum Error {
     TokenValidation(&'static str),
     Crypto,
     UnsupportedFactor,
+    Cancelled,
+    Expired,
     NotImplemented,
 }
 
@@ -48,6 +50,8 @@ impl fmt::Display for Error {
             Self::TokenValidation(reason) => write!(f, "token validation failed: {reason}"),
             Self::Crypto => write!(f, "wolfCrypt operation failed"),
             Self::UnsupportedFactor => write!(f, "authentication factor not supported"),
+            Self::Cancelled => write!(f, "login cancelled"),
+            Self::Expired => write!(f, "login expired"),
             Self::NotImplemented => write!(f, "not implemented"),
         }
     }

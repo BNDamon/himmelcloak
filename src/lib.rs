@@ -57,4 +57,4 @@ pub mod keystore;
 
 pub use client::{PublicClientApplication, Start};
 pub use error::{Error, Result};
-pub use flow::{Answer, AuthFlow, AuthStep, Challenge, Tokens};
+pub use flow::{Answer, AuthFlow, AuthMethod, AuthStep, Challenge, Input, OtpDevice, Tokens};

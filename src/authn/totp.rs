@@ -19,4 +19,4 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 //! TOTP/HOTP factor. Feature: `totp`.
-//! Direct-grant `totp` param (fast path) OR the flow-driver OTP step. `Challenge::Totp` / `Answer::Totp`.
+//! Direct-grant `totp` param (fast path) OR the flow-driver OTP step. `Challenge::OneTimeCode` / `Answer::OneTimeCode`.

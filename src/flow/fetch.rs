@@ -91,6 +91,23 @@ impl CookieJar {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.origins.is_empty()
+    }
+
+    /// Test helper: store one Keycloak session cookie for `url`'s origin.
+    #[cfg(test)]
+    pub(crate) fn seed_session_cookie(&mut self, url: &Url) {
+        let host = url.host_str().unwrap();
+        self.replace(
+            url,
+            &[format!(
+                "#HttpOnly_{host}\tFALSE\t/\tTRUE\t0\tAUTH_SESSION_ID\tsynthetic"
+            )],
+        );
+    }
+
     /// Test helper: whether `url`'s origin holds a cookie named `name`.
     #[cfg(test)]
     fn contains(&self, url: &Url, name: &str) -> bool {
@@ -357,7 +374,7 @@ mod tests {
 
     use super::{get, post_form, CookieJar, Fetched, Page, Redirect, RedirectKind};
     use crate::error::{Error, Result};
-    use crate::flow::AuthFlow;
+    use crate::flow::{AuthFlow, DEFAULT_LOGIN_TIMEOUT};
     use crate::transport::{CurlTransport, HttpTransport, Request, Response};
 
     const KC: &str = "https://keycloak.test:8443";
@@ -480,8 +497,8 @@ mod tests {
             page(vec![]),
         ]);
         let login = kc("/realms/test/protocol/openid-connect/auth");
-        let mut alice = AuthFlow::default();
-        let mut bob = AuthFlow::default();
+        let mut alice = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT);
+        let mut bob = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT);
         get(&transport, &mut alice.jar, login.clone())
             .await
             .unwrap();
