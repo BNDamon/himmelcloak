@@ -497,8 +497,8 @@ mod tests {
             page(vec![]),
         ]);
         let login = kc("/realms/test/protocol/openid-connect/auth");
-        let mut alice = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT);
-        let mut bob = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT);
+        let mut alice = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+        let mut bob = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
         get(&transport, &mut alice.jar, login.clone())
             .await
             .unwrap();

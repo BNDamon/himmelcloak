@@ -88,6 +88,114 @@ fn endpoint(raw: &str, issuer: &Url) -> Result<Url> {
     Ok(url)
 }
 
+pub(crate) struct AuthorizationParameters<'a> {
+    pub client_id: &'a str,
+    pub redirect_uri: &'a Url,
+    pub login_hint: Option<&'a str>,
+    pub scopes: &'a [String],
+    pub pkce_verifier: &'a str,
+    pub state: &'a str,
+    pub nonce: &'a str,
+}
+
+pub(crate) fn authorization_url(
+    endpoint: &Url,
+    parameters: AuthorizationParameters<'_>,
+) -> Result<Url> {
+    let AuthorizationParameters {
+        client_id,
+        redirect_uri,
+        login_hint,
+        scopes,
+        pkce_verifier,
+        state,
+        nonce,
+    } = parameters;
+    // The endpoint must not pre-set a parameter we append, nor request/request_uri/
+    // response_mode, which would override the request we build.
+    const RESERVED_PARAMETERS: [&str; 12] = [
+        "response_type",
+        "client_id",
+        "redirect_uri",
+        "scope",
+        "code_challenge",
+        "code_challenge_method",
+        "state",
+        "nonce",
+        "login_hint",
+        "response_mode",
+        "request",
+        "request_uri",
+    ];
+    if endpoint
+        .query_pairs()
+        .any(|(name, _)| RESERVED_PARAMETERS.contains(&name.as_ref()))
+    {
+        return Err(Error::Protocol(
+            "authorization endpoint parameter collision",
+        ));
+    }
+    if !valid_pkce_verifier(pkce_verifier)
+        || !valid_request_token(state)
+        || !valid_request_token(nonce)
+    {
+        return Err(Error::Protocol("invalid authorization request secret"));
+    }
+
+    let mut normalized_scopes = vec!["openid"];
+    for scope in scopes {
+        if !valid_scope_token(scope) {
+            return Err(Error::Protocol("invalid authorization scope"));
+        }
+        if scope != "openid" && !normalized_scopes.contains(&scope.as_str()) {
+            normalized_scopes.push(scope);
+        }
+    }
+    let scope = normalized_scopes.join(" ");
+    let challenge = pkce_challenge(pkce_verifier)?;
+    let mut url = endpoint.clone();
+    let mut query = url.query_pairs_mut();
+    query
+        .append_pair("response_type", "code")
+        .append_pair("client_id", client_id)
+        .append_pair("redirect_uri", redirect_uri.as_str())
+        .append_pair("scope", &scope)
+        .append_pair("code_challenge", &challenge)
+        .append_pair("code_challenge_method", "S256")
+        .append_pair("state", state)
+        .append_pair("nonce", nonce);
+    if let Some(login_hint) = login_hint {
+        query.append_pair("login_hint", login_hint);
+    }
+    drop(query);
+    Ok(url)
+}
+
+fn valid_scope_token(scope: &str) -> bool {
+    !scope.is_empty()
+        && scope.bytes().all(|byte| {
+            byte == 0x21 || (0x23..=0x5b).contains(&byte) || (0x5d..=0x7e).contains(&byte)
+        })
+}
+
+fn valid_pkce_verifier(verifier: &str) -> bool {
+    (43..=128).contains(&verifier.len())
+        && verifier
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~'))
+}
+
+fn valid_request_token(value: &str) -> bool {
+    value.len() == 22
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn pkce_challenge(verifier: &str) -> Result<String> {
+    Ok(URL_SAFE_NO_PAD.encode(crypto::sha256(verifier.as_bytes())?))
+}
+
 pub(crate) async fn fetch_jwks(transport: &dyn HttpTransport, url: Url) -> Result<Value> {
     let response = transport.send(Request::get(url)).await?;
     if response.status != 200 {
@@ -316,8 +424,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        audience_matches, decode_json, discover, endpoint, jwks_has_eligible_key, token_key_info,
-        validate_claims, verify_id_token,
+        audience_matches, authorization_url, decode_json, discover, endpoint,
+        jwks_has_eligible_key, pkce_challenge, token_key_info, validate_claims, verify_id_token,
+        AuthorizationParameters,
     };
     use crate::error::{Error, Result};
     use crate::sensitive_json::clear_claims;
@@ -355,6 +464,128 @@ mod tests {
             let response = self.0.lock().unwrap().take().unwrap();
             Box::pin(async move { Ok(response) })
         }
+    }
+
+    #[test]
+    fn derives_the_rfc_7636_s256_challenge() {
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        assert_eq!(
+            pkce_challenge(verifier).unwrap(),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+    }
+
+    #[test]
+    fn builds_the_authorization_request() {
+        let endpoint = Url::parse("https://login.example/auth?kc_idp_hint=company").unwrap();
+        let redirect = Url::parse("http://127.0.0.1:8845/himmelcloak/callback").unwrap();
+        let scopes = ["profile", "openid", "email", "profile"].map(str::to_owned);
+        let url = authorization_url(
+            &endpoint,
+            AuthorizationParameters {
+                client_id: "native client",
+                redirect_uri: &redirect,
+                login_hint: Some("alice+admin@example.test"),
+                scopes: &scopes,
+                pkce_verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+                state: "abcdefghijklmnopqrstuv",
+                nonce: "ABCDEFGHIJKLMNOPQRSTUV",
+            },
+        )
+        .unwrap();
+        let parameters: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(parameters.get("kc_idp_hint").unwrap(), "company");
+        assert_eq!(parameters.get("response_type").unwrap(), "code");
+        assert_eq!(parameters.get("client_id").unwrap(), "native client");
+        assert_eq!(parameters.get("redirect_uri").unwrap(), redirect.as_str());
+        assert_eq!(parameters.get("scope").unwrap(), "openid profile email");
+        assert_eq!(
+            parameters.get("code_challenge").unwrap(),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+        assert_eq!(parameters.get("code_challenge_method").unwrap(), "S256");
+        assert_eq!(parameters.get("state").unwrap(), "abcdefghijklmnopqrstuv");
+        assert_eq!(parameters.get("nonce").unwrap(), "ABCDEFGHIJKLMNOPQRSTUV");
+        assert_eq!(
+            parameters.get("login_hint").unwrap(),
+            "alice+admin@example.test"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_scopes_and_owned_parameter_collisions() {
+        let endpoint = Url::parse("https://login.example/auth").unwrap();
+        let redirect = Url::parse("http://127.0.0.1:8845/himmelcloak/callback").unwrap();
+        let build = |endpoint: &Url, scopes: &[String]| {
+            authorization_url(
+                endpoint,
+                AuthorizationParameters {
+                    client_id: "client",
+                    redirect_uri: &redirect,
+                    login_hint: None,
+                    scopes,
+                    pkce_verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+                    state: "abcdefghijklmnopqrstuv",
+                    nonce: "ABCDEFGHIJKLMNOPQRSTUV",
+                },
+            )
+        };
+        for invalid in ["", "profile email", "bad\"scope", "bad\\scope", "café"] {
+            assert!(
+                build(&endpoint, &[invalid.to_owned()]).is_err(),
+                "{invalid}"
+            );
+        }
+        for parameter in [
+            "response_type",
+            "client_id",
+            "redirect_uri",
+            "scope",
+            "code_challenge",
+            "code_challenge_method",
+            "state",
+            "nonce",
+            "login_hint",
+            "response_mode",
+            "request",
+            "request_uri",
+        ] {
+            let endpoint =
+                Url::parse(&format!("https://login.example/auth?{parameter}=attacker")).unwrap();
+            assert_eq!(
+                build(&endpoint, &[]).err(),
+                Some(Error::Protocol(
+                    "authorization endpoint parameter collision"
+                )),
+                "{parameter}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_authorization_request_secrets() {
+        let endpoint = Url::parse("https://login.example/auth").unwrap();
+        let redirect = Url::parse("http://127.0.0.1:8845/himmelcloak/callback").unwrap();
+        let build = |verifier: &str, state: &str, nonce: &str| {
+            authorization_url(
+                &endpoint,
+                AuthorizationParameters {
+                    client_id: "client",
+                    redirect_uri: &redirect,
+                    login_hint: None,
+                    scopes: &[],
+                    pkce_verifier: verifier,
+                    state,
+                    nonce,
+                },
+            )
+        };
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        let state = "abcdefghijklmnopqrstuv";
+        let nonce = "ABCDEFGHIJKLMNOPQRSTUV";
+        assert!(build("short", state, nonce).is_err());
+        assert!(build(verifier, "", nonce).is_err());
+        assert!(build(verifier, state, "").is_err());
     }
 
     #[test]

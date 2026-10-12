@@ -28,6 +28,7 @@ use wolfssl_wolfcrypt::ecdsa::{P256Signature, P256VerifyingKey};
 use wolfssl_wolfcrypt::random::RNG;
 use wolfssl_wolfcrypt::rsa_pkcs1v15::{Sha256, Signature as RsaSignature, VerifyingKey};
 use wolfssl_wolfcrypt::sha::SHA256;
+use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 
@@ -48,11 +49,12 @@ pub(crate) fn sha256(data: &[u8]) -> Result<[u8; 32]> {
     Ok(digest)
 }
 
-pub(crate) fn random_bytes<const N: usize>() -> Result<[u8; N]> {
+pub(crate) fn random_bytes<const N: usize>() -> Result<Zeroizing<[u8; N]>> {
     init()?;
     let rng = RNG::new().map_err(|_| Error::Crypto)?;
-    let mut output = [0u8; N];
-    rng.generate_block(&mut output).map_err(|_| Error::Crypto)?;
+    let mut output = Zeroizing::new([0u8; N]);
+    rng.generate_block(&mut *output)
+        .map_err(|_| Error::Crypto)?;
     Ok(output)
 }
 

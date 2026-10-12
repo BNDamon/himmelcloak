@@ -70,17 +70,18 @@ impl fmt::Debug for Callback {
 /// HTTP. Any other redirect returns `Ok(None)` for the driver to handle or deny.
 ///
 /// Every callback, including an error response, must carry the `state` this login sent
-/// (`expected_state`) before anything else in it is trusted (RFC 6749 sections 4.1.2 and
+/// before anything else in it is trusted (RFC 6749 sections 4.1.2 and
 /// 4.1.2.1). Only `error=access_denied` is a rejection; any other error is a protocol fault.
 pub(crate) fn callback(
     redirect: &Redirect,
     redirect_uri: &Url,
-    expected_state: &str,
+    flow: &mut AuthFlow,
 ) -> Result<Option<Callback>> {
     let location = &redirect.location;
     if !same_endpoint(location, redirect_uri) {
         return Ok(None);
     }
+    flow.ensure_active()?;
     let mut code = None;
     let mut state = None;
     let mut error = None;
@@ -101,9 +102,9 @@ pub(crate) fn callback(
     }
     // The state proves this response belongs to this login; without it, anyone able to trigger a
     // redirect could end or hijack the flow.
-    let state_matches = state
-        .as_ref()
-        .is_some_and(|state| !expected_state.is_empty() && state.as_str() == expected_state);
+    let state_matches = state.as_ref().is_some_and(|state| {
+        !flow.oauth_state().is_empty() && state.as_str() == flow.oauth_state()
+    });
     if !state_matches {
         return Err(Error::Protocol("callback state mismatch"));
     }
@@ -135,14 +136,16 @@ fn same_endpoint(location: &Url, expected: &Url) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use url::Url;
 
     use super::{callback, Callback};
     use crate::error::{Error, Result};
     use crate::flow::fetch::{Redirect, RedirectKind};
+    use crate::flow::AuthFlow;
 
     const CALLBACK: &str = "http://127.0.0.1:8845/himmelcloak/callback";
-    const STATE: &str = "synthetic-state";
 
     fn registered() -> Url {
         Url::parse(CALLBACK).unwrap()
@@ -156,24 +159,34 @@ mod tests {
         }
     }
 
-    fn at_callback(query: &str) -> Result<Option<Callback>> {
+    fn new_flow() -> AuthFlow {
+        AuthFlow::new(Duration::from_secs(60)).unwrap()
+    }
+
+    fn at_callback(query: &str, flow: &mut AuthFlow) -> Result<Option<Callback>> {
         callback(
             &redirect_to(&format!("{CALLBACK}?{query}")),
             &registered(),
-            STATE,
+            flow,
         )
     }
 
     #[test]
     fn registered_callback_yields_the_code() {
-        let found = at_callback("state=synthetic-state&session_state=other&code=synthetic-code")
-            .unwrap()
-            .expect("the registered callback");
+        let mut flow = new_flow();
+        let state = flow.oauth_state().to_owned();
+        let found = at_callback(
+            &format!("state={state}&session_state=other&code=synthetic-code"),
+            &mut flow,
+        )
+        .unwrap()
+        .expect("the registered callback");
         assert_eq!(found.code, "synthetic-code");
     }
 
     #[test]
     fn a_missing_or_wrong_state_is_refused_even_on_errors() {
+        let mut flow = new_flow();
         for query in [
             "code=c&state=other-state",
             "code=c&state=",
@@ -182,25 +195,28 @@ mod tests {
             "error=access_denied",
         ] {
             assert_eq!(
-                at_callback(query).err(),
+                at_callback(query, &mut flow).err(),
                 Some(Error::Protocol("callback state mismatch")),
                 "{query}"
             );
         }
-        // An empty expected state never matches, even an empty returned one.
+        // Ending a flow rejects the callback before any returned parameter is trusted.
+        let mut ended = new_flow();
+        ended.cancel();
         assert_eq!(
             callback(
                 &redirect_to(&format!("{CALLBACK}?code=c&state=")),
                 &registered(),
-                ""
+                &mut ended
             )
             .err(),
-            Some(Error::Protocol("callback state mismatch"))
+            Some(Error::Cancelled)
         );
     }
 
     #[test]
     fn other_redirects_are_not_the_callback() {
+        let mut flow = new_flow();
         for location in [
             "https://127.0.0.1:8845/himmelcloak/callback?code=c&state=s",
             "http://127.0.0.1:8846/himmelcloak/callback?code=c&state=s",
@@ -211,7 +227,7 @@ mod tests {
             "https://keycloak.test:8443/realms/test/login-actions/required-action",
         ] {
             assert!(
-                callback(&redirect_to(location), &registered(), "s")
+                callback(&redirect_to(location), &registered(), &mut flow)
                     .unwrap()
                     .is_none(),
                 "{location} must not count as the callback"
@@ -221,17 +237,16 @@ mod tests {
 
     #[test]
     fn only_access_denied_is_a_rejection() {
+        let mut flow = new_flow();
+        let state = flow.oauth_state().to_owned();
         assert_eq!(
-            at_callback("error=access_denied&state=synthetic-state").err(),
+            at_callback(&format!("error=access_denied&state={state}"), &mut flow).err(),
             Some(Error::AuthenticationRejected)
         );
-        for query in [
-            "error=server_error&state=synthetic-state",
-            "error=temporarily_unavailable&state=synthetic-state",
-            "error=&state=synthetic-state",
-        ] {
+        for error in ["server_error", "temporarily_unavailable", ""] {
+            let query = format!("error={error}&state={state}");
             assert_eq!(
-                at_callback(query).err(),
+                at_callback(&query, &mut flow).err(),
                 Some(Error::Protocol("authorization error on callback")),
                 "{query}"
             );
@@ -240,28 +255,30 @@ mod tests {
 
     #[test]
     fn malformed_callbacks_are_protocol_errors() {
+        let mut flow = new_flow();
+        let state = flow.oauth_state().to_owned();
         for (query, reason) in [
-            ("state=synthetic-state", "callback without code"),
-            ("code=&state=synthetic-state", "callback without code"),
+            (format!("state={state}"), "callback without code"),
+            (format!("code=&state={state}"), "callback without code"),
             (
-                "code=c&code=d&state=synthetic-state",
+                format!("code=c&code=d&state={state}"),
                 "repeated callback parameter",
             ),
             (
-                "code=a&code=b%2Fsecret&state=synthetic-state",
+                format!("code=a&code=b%2Fsecret&state={state}"),
                 "repeated callback parameter",
             ),
             (
-                "code=c&state=synthetic-state&state=t",
+                format!("code=c&state={state}&state=t"),
                 "repeated callback parameter",
             ),
             (
-                "error=access_denied&error=server_error&state=synthetic-state",
+                format!("error=access_denied&error=server_error&state={state}"),
                 "repeated callback parameter",
             ),
         ] {
             assert_eq!(
-                at_callback(query).err(),
+                at_callback(&query, &mut flow).err(),
                 Some(Error::Protocol(reason)),
                 "{query}"
             );
@@ -270,9 +287,21 @@ mod tests {
 
     #[test]
     fn debug_output_never_shows_the_code() {
-        let found = at_callback("code=synthetic-code&state=synthetic-state")
+        let mut flow = new_flow();
+        let state = flow.oauth_state().to_owned();
+        let found = at_callback(&format!("code=synthetic-code&state={state}"), &mut flow)
             .unwrap()
             .unwrap();
         assert_eq!(format!("{found:?}"), "Callback { .. }");
+    }
+
+    #[test]
+    fn expired_flow_cannot_accept_a_callback() {
+        let mut flow = AuthFlow::new(Duration::ZERO).unwrap();
+        let state = flow.oauth_state().to_owned();
+        assert_eq!(
+            at_callback(&format!("code=c&state={state}"), &mut flow).err(),
+            Some(Error::Expired)
+        );
     }
 }

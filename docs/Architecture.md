@@ -24,10 +24,13 @@ optional Keycloak configuration, so it cannot serve as the only login path.
 
 ## Native flow driver
 
-The next core component will initiate Keycloak's authorization-code flow with
-PKCE, preserve its session cookies, classify the returned challenge, accept a
-typed answer, and exchange the final code for tokens. The caller owns the user
-conversation; the library owns protocol state and response validation.
+Authorization-request construction is in place. Each login generates a
+wolfCrypt-backed PKCE verifier and S256 challenge plus independent state and
+nonce values. The flow retains those secrets, validates the returned state,
+and wipes them when it ends. The remaining driver work will fetch and classify
+the returned challenge, accept a typed answer, and exchange the final code for
+tokens. The caller owns the user conversation; the library owns protocol state
+and response validation.
 
 The challenge/answer contract in `src/flow/mod.rs` fixes that conversation.
 Each Keycloak login page yields a `Challenge` (username, password, one-time
@@ -40,11 +43,12 @@ browser-only setup, such as configuring an authenticator app, are unsupported. E
 `AuthStep` is another challenge, `Complete` with tokens, or `Failed` with
 Keycloak's message. `Challenge::input()` tells the caller whether to hide or
 show what the user types. An `AuthFlow` is single-use: `cancel()`, a
-30-minute time limit, or completion ends it, wipes its cookies, and makes
-every later step fail with `Cancelled`, `Expired`, or a protocol error. The
-driver checks this before every step. Only `initiate_auth_flow` creates a flow.
+30-minute time limit, or completion ends it, wipes its cookies and request
+secrets, and makes every later step fail with `Cancelled`, `Expired`, or a
+protocol error. The driver checks this before every step. Only
+`initiate_auth_flow` creates a flow.
 `initiate_auth_flow` and `continue_auth_flow` otherwise still return
-`NotImplemented`.
+`NotImplemented` until the page driver and code exchange are connected.
 
 Page fetching (`src/flow/fetch.rs`) is in place beneath the driver. Each
 `AuthFlow` owns its own cookie jar, which keeps libcurl's cookie lines per exact
