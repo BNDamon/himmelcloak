@@ -58,11 +58,15 @@ for the Keycloak end-to-end suite.
 
 ## Prebuilt CI image
 
-The first branch run builds the native test image from `tests/build/Dockerfile`.
-Move that build into a separate image-publishing workflow and store the result
-at `ghcr.io/aidangarske/himmelcloak/tester`. Rebuild and publish it when the
-Dockerfile, native build script, Rust toolchain, or pinned wolfSSL/curl baseline
-changes. Record an immutable image digest for each publication.
+`publish-ci-image.yml` builds the native test images from
+`.github/docker/himmelcloak-ci/` for Debian 12, Ubuntu 24.04, openSUSE Leap
+16.0, openSUSE Tumbleweed, SLE BCI 16.0, Rocky Linux 9, and Fedora, publishes
+them as `ghcr.io/aidangarske/himmelcloak-ci:<distro>-v1` on every push to `main`
+and on manual dispatch, and records each image's immutable digest in the run
+summary. System packages are installed only in those Dockerfiles, never in
+workflows. `cross-distro.yml` pins those digests and builds and tests each
+feature set (default, none, password, gov, passwordless) inside every image on
+each push and PR; adopting a new publication is a PR that bumps the digests.
 
 Once the image is published, the every-push foundation and Keycloak jobs should pull
 that digest and mount the current checkout into the container. They still

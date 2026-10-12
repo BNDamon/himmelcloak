@@ -1,0 +1,56 @@
+name: Cross-distro build and tests
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cross-distro-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.distro }} / ${{ matrix.features }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/aidangarske/himmelcloak-ci@${{ matrix.digest }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        distro:
+          - debian-12
+          - ubuntu-24.04
+          - opensuse-leap-16.0
+          - opensuse-tumbleweed
+          - sle-bci-16.0
+          - rockylinux-9
+          - fedora
+        features: [default, none, password, gov, passwordless]
+        # Pinned to the digests publish-ci-image.yml lists in its run summary; bump them together.
+        include:
+          - { distro: debian-12, digest: "sha256:a4b388862188a79ffe924cd10dcde593fc2b7d8395292e8bf226b655f5f7dcae" }
+          - { distro: ubuntu-24.04, digest: "sha256:71418ed6b412e1c8ed45af1c6c48cb7494722fa8e2bec995e4e5b84785f33276" }
+          - { distro: opensuse-leap-16.0, digest: "sha256:922e2b1d0c90aae68986f600518ec36edc6be5a52176f6a439ebb72742841d44" }
+          - { distro: opensuse-tumbleweed, digest: "sha256:048b0a531810b6dc19654becf87211645bd69bd99c74c32a7bde67b815f62411" }
+          - { distro: sle-bci-16.0, digest: "sha256:c227ec6a80a91f72156d2ab5608c9ad1b4766861c6ce67b5cd5ecf7b4a392907" }
+          - { distro: rockylinux-9, digest: "sha256:3c44cfdf5d1e3039a0c96bc088466c415ab355fec25aaf905a4b822119e4b80c" }
+          - { distro: fedora, digest: "sha256:053f3f4aa920659681ecb11debf01e20bc897a1f7bc4de8ebba3d8fcd0ad0130" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and test
+        env:
+          FEATURES: ${{ matrix.features }}
+        run: |
+          case "$FEATURES" in
+            default) flags=() ;;
+            none) flags=(--no-default-features) ;;
+            *) flags=(--no-default-features --features "$FEATURES") ;;
+          esac
+          cargo build --locked "${flags[@]}"
+          cargo test --locked --tests "${flags[@]}"

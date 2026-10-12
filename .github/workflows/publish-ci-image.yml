@@ -1,0 +1,84 @@
+name: Publish CI images
+
+# Publishes ghcr.io/aidangarske/himmelcloak-ci:<distro>-v1 and lists each image's digest in the
+# run summary. Consumers pin those digests, so bump them in cross-distro.yml to adopt a new
+# publication. Install dependencies only in .github/docker/himmelcloak-ci/, never in workflows.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: publish-ci-image
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: ${{ matrix.name }}
+    if: github.repository == 'aidangarske/himmelcloak'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: debian-12, file: Dockerfile.apt, base: "debian:12" }
+          - { name: ubuntu-24.04, file: Dockerfile.apt, base: "ubuntu:24.04" }
+          - { name: opensuse-leap-16.0, file: Dockerfile.zypper, base: "opensuse/leap:16.0" }
+          - { name: opensuse-tumbleweed, file: Dockerfile.zypper, base: "opensuse/tumbleweed" }
+          - name: sle-bci-16.0
+            file: Dockerfile.zypper
+            base: "registry.suse.com/bci/bci-base:16.0"
+            extra-repo: "https://download.opensuse.org/distribution/leap/16.0/repo/oss/"
+          - { name: rockylinux-9, file: Dockerfile.dnf, base: "rockylinux:9" }
+          - { name: fedora, file: Dockerfile.dnf, base: "fedora:latest" }
+    env:
+      CI_IMAGE: ghcr.io/aidangarske/himmelcloak-ci:${{ matrix.name }}-v1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: .github/docker/himmelcloak-ci/${{ matrix.file }}
+          build-args: |
+            BASE=${{ matrix.base }}
+            EXTRA_REPO=${{ matrix.extra-repo }}
+          platforms: linux/amd64
+          pull: true
+          load: true
+          tags: ${{ env.CI_IMAGE }}
+          cache-from: type=registry,ref=${{ env.CI_IMAGE }}
+          cache-to: type=inline
+      - name: Check baked tools
+        run: |
+          docker run --rm "$CI_IMAGE" bash -euo pipefail -c '
+            for tool in cargo rustc clang git pkg-config curl-config; do command -v "$tool"; done
+            cargo clippy --version
+            cargo fmt --version
+            curl-config --ssl-backends | grep -qx wolfSSL
+            cat /opt/himmelcloak-native/.himmelcloak-refs
+          '
+      - name: Push verified image
+        run: |
+          docker push "$CI_IMAGE"
+          echo "${{ matrix.name }} $(docker inspect --format '{{index .RepoDigests 0}}' "$CI_IMAGE")" >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify anonymous access for fork PRs
+        run: |
+          config=$(mktemp -d)
+          if ! docker --config "$config" manifest inspect "$CI_IMAGE" > /dev/null; then
+            echo '::error::Make the himmelcloak-ci package public in its GHCR package settings.'
+            exit 1
+          fi
