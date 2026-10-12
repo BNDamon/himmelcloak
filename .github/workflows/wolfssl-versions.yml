@@ -4,7 +4,7 @@ name: wolfSSL and curl compatibility
 # wolfSSL and curl without manually updating version strings.
 on:
   push:
-    branches: ['main', 'core', 'release/**']
+    branches: ['main', 'release/**']
   pull_request:
   workflow_dispatch:
   schedule:
