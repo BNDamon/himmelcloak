@@ -82,11 +82,13 @@ pub(crate) fn callback(redirect: &Redirect, redirect_uri: &Url) -> Result<Option
             "error" => return Err(Error::AuthenticationRejected),
             _ => continue,
         };
+        // Wrap the decoded value at once, so it is wiped on every path, including the early
+        // return below. `replace` hands back any earlier value, which is wiped as it drops.
+        let value = Zeroizing::new(value.into_owned());
         // A repeated parameter makes it ambiguous which value is meant; refuse it.
-        if slot.is_some() {
+        if slot.replace(value).is_some() {
             return Err(Error::Protocol("repeated callback parameter"));
         }
-        *slot = Some(Zeroizing::new(value.into_owned()));
     }
     match (code, state) {
         (Some(mut code), Some(mut state)) if !code.is_empty() && !state.is_empty() => {
@@ -179,6 +181,10 @@ mod tests {
             ("code=c", "callback without code or state"),
             ("code=&state=s", "callback without code or state"),
             ("code=c&code=d&state=s", "repeated callback parameter"),
+            (
+                "code=a&code=b%2Fsecret&state=s",
+                "repeated callback parameter",
+            ),
             ("code=c&state=s&state=t", "repeated callback parameter"),
         ] {
             let location = format!("{CALLBACK}?{query}");
