@@ -82,8 +82,21 @@ pub(crate) async fn discover(
 
 fn endpoint(raw: &str, issuer: &Url) -> Result<Url> {
     let url = Url::parse(raw).map_err(|_| Error::Protocol("invalid OIDC endpoint"))?;
-    if url.scheme() != "https" || url.origin() != issuer.origin() || url.fragment().is_some() {
+    if url.scheme() != "https" || url.origin() != issuer.origin() {
         return Err(Error::Protocol("OIDC endpoint origin mismatch"));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(Error::Protocol("OIDC endpoint contains credentials"));
+    }
+    if url.fragment().is_some() {
+        return Err(Error::Protocol("OIDC endpoint contains fragment"));
+    }
+    // Same origin still allows another realm on the same server. The issuer ends in
+    // /realms/<realm>, so take that realm and require the endpoint to sit under it.
+    // Matching the realm, not the whole path, lets the frontend issuer and the
+    // backchannel endpoints use different context paths.
+    if issuer_realm(issuer.path()).is_some_and(|realm| !endpoint_in_realm(url.path(), realm)) {
+        return Err(Error::Protocol("OIDC endpoint outside issuer realm"));
     }
     Ok(url)
 }
@@ -194,6 +207,42 @@ fn valid_request_token(value: &str) -> bool {
 
 fn pkce_challenge(verifier: &str) -> Result<String> {
     Ok(URL_SAFE_NO_PAD.encode(crypto::sha256(verifier.as_bytes())?))
+}
+
+// The realm an issuer names: its last path segment, when that segment follows a
+// "realms" segment. Config::issuer always appends /realms/<realm>, so the realm is
+// unambiguous here however the server's context path is shaped.
+fn issuer_realm(path: &str) -> Option<&str> {
+    let mut previous = None;
+    let mut last = None;
+    for segment in path.split('/').filter(|segment| !segment.is_empty()) {
+        previous = last;
+        last = Some(segment);
+    }
+    match (previous, last) {
+        (Some("realms"), realm @ Some(_)) => realm,
+        _ => None,
+    }
+}
+
+// Whether an endpoint path is scoped to `realm`: its deepest realms/<realm> pair
+// names `realm`, with no further "realms" segment after it that would start another.
+fn endpoint_in_realm(path: &str, realm: &str) -> bool {
+    let segments: Vec<&str> = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    // rposition gives the index of the "realms" segment, so the realm value is next.
+    segments
+        .windows(2)
+        .rposition(|pair| pair[0] == "realms" && pair[1] == realm)
+        .is_some_and(|at| {
+            // Nothing after the realm may start another realm. A percent-encoded segment
+            // could hide one, and Keycloak's resource path has neither, so reject both.
+            segments[at + 2..]
+                .iter()
+                .all(|segment| *segment != "realms" && !segment.contains('%'))
+        })
 }
 
 pub(crate) async fn fetch_jwks(transport: &dyn HttpTransport, url: Url) -> Result<Value> {
@@ -466,6 +515,27 @@ mod tests {
         }
     }
 
+    fn discovery_document(issuer: &Url) -> serde_json::Value {
+        json!({
+            "issuer": issuer.as_str(),
+            "authorization_endpoint": "https://login.example/realms/test/auth",
+            "token_endpoint": "https://login.example/realms/test/token",
+            "jwks_uri": "https://login.example/realms/test/keys",
+            "userinfo_endpoint": "https://login.example/realms/test/userinfo",
+            "revocation_endpoint": "https://login.example/realms/test/revoke"
+        })
+    }
+
+    async fn discover_body(body: Vec<u8>, issuer: &Url) -> Result<super::Metadata> {
+        let transport = RecordedTransport(Mutex::new(Some(Response {
+            status: 200,
+            headers: Vec::new(),
+            body,
+            cookies: Vec::new(),
+        })));
+        discover(&transport, issuer).await
+    }
+
     #[test]
     fn derives_the_rfc_7636_s256_challenge() {
         let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
@@ -599,26 +669,206 @@ mod tests {
         assert!(endpoint("https://elsewhere.example/token", &issuer).is_err());
         assert!(endpoint("http://login.example/token", &issuer).is_err());
         assert!(endpoint("https://login.example/token#fragment", &issuer).is_err());
+        assert!(endpoint("https://user@login.example/token", &issuer).is_err());
+        assert!(endpoint("https://user:secret@login.example/token", &issuer).is_err());
+        // Same origin, different realm: must be rejected.
+        assert!(endpoint("https://login.example/realms/other/token", &issuer).is_err());
+        assert!(endpoint("https://login.example/realms/testing/token", &issuer).is_err());
+        // Same realm under a different backchannel context path: allowed.
+        assert!(endpoint("https://login.example/private/realms/test/token", &issuer).is_ok());
+    }
+
+    #[test]
+    fn endpoint_realm_survives_realms_in_the_context_path() {
+        // Server context paths that themselves contain a "realms" segment.
+        let issuer = Url::parse("https://login.example/realms/proxy/realms/test").unwrap();
+        assert!(endpoint(
+            "https://login.example/realms/proxy/realms/test/token",
+            &issuer
+        )
+        .is_ok());
+        assert!(endpoint("https://login.example/private/realms/test/token", &issuer).is_ok());
+        assert!(endpoint(
+            "https://login.example/realms/proxy/realms/other/token",
+            &issuer
+        )
+        .is_err());
+
+        let issuer = Url::parse("https://login.example/proxy/realms/gateway/realms/test").unwrap();
+        assert!(endpoint(
+            "https://login.example/proxy/realms/gateway/realms/test/token",
+            &issuer
+        )
+        .is_ok());
+        assert!(endpoint(
+            "https://login.example/proxy/realms/gateway/realms/other/token",
+            &issuer
+        )
+        .is_err());
+
+        // Server context path that ends in "/realms".
+        let issuer = Url::parse("https://login.example/realms/realms/test").unwrap();
+        assert!(endpoint("https://login.example/realms/realms/test/token", &issuer).is_ok());
+        assert!(endpoint("https://login.example/realms/realms/other/token", &issuer).is_err());
+
+        // Server context path that is itself "/realms/<realm>".
+        let issuer = Url::parse("https://login.example/realms/test/realms/test").unwrap();
+        assert!(endpoint(
+            "https://login.example/realms/test/realms/test/token",
+            &issuer
+        )
+        .is_ok());
+        assert!(endpoint(
+            "https://login.example/realms/test/realms/other/token",
+            &issuer
+        )
+        .is_err());
+
+        // A percent-encoded "realms" marker must not slip a different realm past the check.
+        let issuer = Url::parse("https://login.example/realms/test").unwrap();
+        assert!(endpoint(
+            "https://login.example/realms/test/%72ealms/other/token",
+            &issuer
+        )
+        .is_err());
+
+        // A realm name with a reserved character is percent-encoded the same way on
+        // both sides, so a legitimate endpoint still matches.
+        let issuer = Url::parse("https://login.example/realms/my%20realm").unwrap();
+        assert!(endpoint("https://login.example/realms/my%20realm/token", &issuer).is_ok());
+        assert!(endpoint("https://login.example/realms/other/token", &issuer).is_err());
+
+        // A realm literally named "realms" validates for its own endpoints.
+        let issuer = Url::parse("https://login.example/realms/realms").unwrap();
+        assert!(endpoint(
+            "https://login.example/realms/realms/protocol/openid-connect/token",
+            &issuer
+        )
+        .is_ok());
+        assert!(endpoint("https://login.example/realms/other/token", &issuer).is_err());
     }
 
     #[tokio::test]
-    async fn discovery_rejects_cross_origin_jwks() {
+    async fn discovery_rejects_malformed_documents() {
         let issuer = Url::parse("https://login.example/realms/test").unwrap();
-        let document = json!({
-            "issuer": issuer.as_str(),
-            "authorization_endpoint": "https://login.example/realms/test/auth",
-            "token_endpoint": "https://login.example/realms/test/token",
-            "jwks_uri": "https://attacker.example/keys",
-            "userinfo_endpoint": "https://login.example/realms/test/userinfo",
-            "revocation_endpoint": "https://login.example/realms/test/revoke"
-        });
-        let transport = RecordedTransport(Mutex::new(Some(Response {
-            status: 200,
-            headers: Vec::new(),
-            body: serde_json::to_vec(&document).unwrap(),
-            cookies: Vec::new(),
-        })));
-        assert!(discover(&transport, &issuer).await.is_err());
+        for body in [b"{".to_vec(), b"[]".to_vec(), b"null".to_vec()] {
+            assert!(discover_body(body, &issuer).await.is_err());
+        }
+
+        let fields = [
+            "issuer",
+            "authorization_endpoint",
+            "token_endpoint",
+            "jwks_uri",
+            "userinfo_endpoint",
+            "revocation_endpoint",
+        ];
+        for field in fields {
+            let mut missing = discovery_document(&issuer);
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(
+                discover_body(serde_json::to_vec(&missing).unwrap(), &issuer)
+                    .await
+                    .is_err(),
+                "missing {field}"
+            );
+            for invalid in [serde_json::Value::Null, json!(7)] {
+                let mut wrong_type = discovery_document(&issuer);
+                wrong_type[field] = invalid;
+                assert!(
+                    discover_body(serde_json::to_vec(&wrong_type).unwrap(), &issuer)
+                        .await
+                        .is_err(),
+                    "wrong type for {field}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn discovery_requires_the_expected_issuer() {
+        let issuer = Url::parse("https://login.example/realms/test").unwrap();
+        let mut document = discovery_document(&issuer);
+        document["issuer"] = json!("https://login.example/realms/other");
+        assert_eq!(
+            discover_body(serde_json::to_vec(&document).unwrap(), &issuer)
+                .await
+                .err(),
+            Some(Error::Protocol("discovered issuer mismatch"))
+        );
+    }
+
+    #[tokio::test]
+    async fn discovery_rejects_untrusted_endpoints() {
+        let issuer = Url::parse("https://login.example/realms/test").unwrap();
+        let endpoint_fields = [
+            "authorization_endpoint",
+            "token_endpoint",
+            "jwks_uri",
+            "userinfo_endpoint",
+            "revocation_endpoint",
+        ];
+        let invalid_endpoints = [
+            "/realms/test/relative",
+            "http://login.example/realms/test/insecure",
+            "https://attacker.example/endpoint",
+            "https://login.example/endpoint#fragment",
+            "https://user:secret@login.example/endpoint",
+        ];
+        for field in endpoint_fields {
+            for endpoint in invalid_endpoints {
+                let mut document = discovery_document(&issuer);
+                document[field] = json!(endpoint);
+                assert!(
+                    discover_body(serde_json::to_vec(&document).unwrap(), &issuer)
+                        .await
+                        .is_err(),
+                    "accepted {field}={endpoint}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn discovery_reports_endpoint_rejection_reason() {
+        let issuer = Url::parse("https://login.example/realms/test").unwrap();
+        let cases = [
+            (
+                "https://attacker.example/endpoint",
+                "OIDC endpoint origin mismatch",
+            ),
+            (
+                "https://user:secret@login.example/endpoint",
+                "OIDC endpoint contains credentials",
+            ),
+            (
+                "https://login.example/endpoint#fragment",
+                "OIDC endpoint contains fragment",
+            ),
+        ];
+        for (endpoint, expected) in cases {
+            let mut document = discovery_document(&issuer);
+            document["token_endpoint"] = json!(endpoint);
+            assert_eq!(
+                discover_body(serde_json::to_vec(&document).unwrap(), &issuer)
+                    .await
+                    .err(),
+                Some(Error::Protocol(expected)),
+                "{endpoint}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn discovery_allows_extension_fields() {
+        let issuer = Url::parse("https://login.example/realms/test").unwrap();
+        let mut document = discovery_document(&issuer);
+        document["vendor_extension"] = json!({"enabled": true});
+        assert!(
+            discover_body(serde_json::to_vec(&document).unwrap(), &issuer)
+                .await
+                .is_ok()
+        );
     }
 
     #[test]
