@@ -380,7 +380,7 @@ fn clean_label(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify, PageKind};
+    use super::{classify, toggle_credential, PageKind};
 
     const BASE_LOGIN: &str = include_str!("../../tests/fixtures/keycloak/base/login.html");
     const BASE_OTP: &str = include_str!("../../tests/fixtures/keycloak/base/login-otp.html");
@@ -518,6 +518,80 @@ mod tests {
             r#"type="hidden" name="selectedCredentialId""#,
             r#"type="text" name="selectedCredentialId""#
         )));
+    }
+
+    #[test]
+    fn device_tiles_must_agree_with_the_posted_choice() {
+        // keycloak.v2 tiles with no hidden field would leave no way to post the choice.
+        assert!(is_unknown(&V2_DEVICES.replace(
+            r#"<input id="selectedCredentialId" type="hidden" name="selectedCredentialId" value="00000000-0000-4000-8000-000000000001">"#,
+            ""
+        )));
+        // A base radio with no matching device tile.
+        assert!(is_unknown(&with_in_form(
+            BASE_DEVICES,
+            r#"<input type="radio" name="selectedCredentialId" value="extra">"#
+        )));
+        // Radios and a hidden choice together.
+        assert!(is_unknown(&BASE_DEVICES.replacen(
+            r#"<input id="kc-otp-credential-0""#,
+            r#"<input type="hidden" name="selectedCredentialId" value="00000000-0000-4000-8000-000000000001"><input id="kc-otp-credential-0""#,
+            1
+        )));
+        // Device numbering with a gap.
+        assert!(is_unknown(&V2_DEVICES.replace(
+            r#"id="kc-otp-credential-1""#,
+            r#"id="kc-otp-credential-5""#
+        )));
+        // Device markup on the login page.
+        assert!(is_unknown(&with_in_form(
+            BASE_LOGIN,
+            r#"<div id="kc-otp-credential-0" onclick="toggleOTP(0, 'x')">Phone</div>"#
+        )));
+    }
+
+    #[test]
+    fn device_labels_survive_nested_markup() {
+        let page = V2_DEVICES.replace(
+            r#"<span class="pf-v5-c-tile__title">Phone</span>"#,
+            r#"<div><div><span class="pf-v5-c-tile__title">Phone</span></div></div>"#,
+        );
+        assert_eq!(devices(&page)[0].1, "Phone");
+    }
+
+    #[test]
+    fn forms_with_neither_login_nor_code_fields_are_unknown() {
+        for page in [
+            r#"<form><input name="username"></form>"#,
+            r#"<form><input name="password"></form>"#,
+            r#"<form><button name="login">Sign in</button></form>"#,
+        ] {
+            assert!(is_unknown(page), "{page}");
+        }
+    }
+
+    #[test]
+    fn toggle_credential_reads_only_the_expected_call() {
+        assert_eq!(
+            toggle_credential("toggleOTP(0, 'id-a')", 0).as_deref(),
+            Some("id-a")
+        );
+        assert_eq!(
+            toggle_credential(" toggleOTP(2,\"id-b\"); ", 2).as_deref(),
+            Some("id-b")
+        );
+        for (onclick, index) in [
+            ("toggleOTP(1, 'id-a')", 0),
+            ("toggleOTP(0, id-a)", 0),
+            ("toggleOTP(0, 'id-a\")", 0),
+            ("toggleOTP(0, '')", 0),
+            ("toggleOTP(0, 'a\\'b')", 0),
+            ("toggleOTP(0)", 0),
+            ("steal(0, 'id-a')", 0),
+            ("toggleOTP(0, 'id-a'); steal()", 0),
+        ] {
+            assert_eq!(toggle_credential(onclick, index), None, "{onclick}");
+        }
     }
 
     #[test]
