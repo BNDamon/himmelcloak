@@ -69,6 +69,13 @@ impl Config {
                 "server URL must not have credentials, query, or fragment",
             ));
         }
+        // The callback is matched by scheme, host, port, and path only, so a fixed query
+        // (RFC 6749 section 3.1.2) could not be verified; refuse one rather than ignore it.
+        if self.redirect_uri.query().is_some() || self.redirect_uri.fragment().is_some() {
+            return Err(Error::InvalidConfiguration(
+                "redirect URI must not have a query or fragment",
+            ));
+        }
         if self.realm.is_empty()
             || self.realm.contains('/')
             || matches!(self.realm.as_str(), "." | "..")
@@ -121,6 +128,18 @@ mod tests {
             "http://keycloak.example",
         ] {
             assert!(Config::new(url, "test", "client").is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_redirect_uris_with_a_query_or_fragment() {
+        for redirect in [
+            "http://127.0.0.1:8845/himmelcloak/callback?tenant=a",
+            "http://127.0.0.1:8845/himmelcloak/callback#done",
+        ] {
+            let mut config = Config::new("https://keycloak.example", "test", "client").unwrap();
+            config.redirect_uri = Url::parse(redirect).unwrap();
+            assert!(config.validate().is_err(), "{redirect}");
         }
     }
 
