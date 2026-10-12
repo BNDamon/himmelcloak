@@ -6,17 +6,17 @@
     <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
 
     <title>Sign in to himmelcloak-test</title>
-        <link rel="icon" href="/resources/nh1u5/login/base/img/favicon.ico" />
+        <link rel="icon" href="/resources/FIXTURE/login/base/img/favicon.ico" />
     <script type="importmap">
         {
             "imports": {
-                "rfc4648": "/resources/nh1u5/common/keycloak/vendor/rfc4648/rfc4648.js"
+                "rfc4648": "/resources/FIXTURE/common/keycloak/vendor/rfc4648/rfc4648.js"
             }
         }
     </script>
-    <script src="/resources/nh1u5/login/base/js/menu-button-links.js" type="module"></script>
+    <script src="/resources/FIXTURE/login/base/js/menu-button-links.js" type="module"></script>
     <script type="module">
-        import { startSessionPolling } from "/resources/nh1u5/login/base/js/authChecker.js";
+        import { startSessionPolling } from "/resources/FIXTURE/login/base/js/authChecker.js";
 
         startSessionPolling(
             "/realms/himmelcloak-test/login-actions/restart?client_id=himmelcloak-test-client&tab_id=FIXTURE&client_data=FIXTURE&skip_logout=true"
@@ -46,7 +46,7 @@
         });
     </script>
         <script type="module">
-            import { checkAuthSession } from "/resources/nh1u5/login/base/js/authChecker.js";
+            import { checkAuthSession } from "/resources/FIXTURE/login/base/js/authChecker.js";
 
             checkAuthSession(
                 "FIXTURE"

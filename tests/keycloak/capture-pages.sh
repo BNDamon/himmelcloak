@@ -83,6 +83,8 @@ import re, sys
 page = sys.stdin.read()
 page = re.sub(r"\b(session_code|execution|tab_id|client_data|kc_locale)=[^&\"\s]+", r"\1=FIXTURE", page)
 page = re.sub(r"(checkAuthSession\(\s*\")[^\"]+", r"\1FIXTURE", page)
+# Keycloak picks a new static-resource path on every server start.
+page = re.sub(r"/resources/[a-z0-9]+/", "/resources/FIXTURE/", page)
 ids = {}
 def stable(match):
     # Same random ID in, same placeholder out, so links between fields survive.
@@ -118,3 +120,9 @@ for theme in keycloak.v2 base; do
     capture "$theme" otp-two login-otp-devices.html
     echo "captured $theme"
 done
+
+# Record which Keycloak release rendered these pages, so a field change can be traced to it.
+"${kc_curl[@]}" -H "Authorization: Bearer $(admin_token)" "$kc/admin/serverinfo" |
+    python3 -c 'import json, sys; print(json.load(sys.stdin)["systemInfo"]["version"])' \
+    > "$out_dir/KEYCLOAK_VERSION"
+echo "keycloak $(cat "$out_dir/KEYCLOAK_VERSION")"
