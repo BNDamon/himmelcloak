@@ -51,7 +51,11 @@ Page fetching (`src/flow/fetch.rs`) is in place beneath the driver. Each
 origin (scheme, host, and port), sends them only back to that origin, and is
 zeroized when the flow is dropped. Redirects are never followed: a fetch
 returns the resolved `Location` flagged same-origin or not, so the driver
-decides every hop and can deny an unexpected host.
+decides every hop and can deny an unexpected host. Fetching is HTTPS-only. The
+driver recognises the redirect to the registered callback (`Config::redirect_uri`,
+loopback HTTP by default) by exact scheme, host, port, and path, checks that its
+`state` matches the login's before trusting it, takes its `code`, and stops
+without requesting it. A redirect URI with a query or fragment is refused.
 
 For WebAuthn, the intended adapter builds client data for Keycloak's actual
 origin and sends the signing request to a caller-provided authenticator. The
