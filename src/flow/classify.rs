@@ -219,21 +219,19 @@ impl Scan {
         if name.as_slice() == b"form" {
             self.form = None;
         }
-        let Some(capture) = &mut self.capture else {
-            return;
-        };
-        if capture.tag != name.as_slice() {
-            return;
-        }
-        capture.depth -= 1;
-        if capture.depth > 0 {
-            return;
-        }
-        if let Some(capture) = self.capture.take() {
-            match capture.target {
-                Target::Label(target) => self.labels.push((target, capture.text)),
-                Target::Tile(index) => self.tiles[index].text = capture.text,
+        match self.capture.take() {
+            Some(mut capture) if capture.tag == name.as_slice() => {
+                capture.depth -= 1;
+                if capture.depth > 0 {
+                    self.capture = Some(capture);
+                    return;
+                }
+                match capture.target {
+                    Target::Label(target) => self.labels.push((target, capture.text)),
+                    Target::Tile(index) => self.tiles[index].text = capture.text,
+                }
             }
+            other => self.capture = other,
         }
     }
 
@@ -400,13 +398,16 @@ mod tests {
         classify(html.as_bytes())
     }
 
-    fn devices(html: &str) -> Vec<(String, String)> {
+    /// The device list, or `None` when the page is not a one-time-code page.
+    fn devices(html: &str) -> Option<Vec<(String, String)>> {
         match kind(html) {
-            PageKind::OneTimeCode { devices } => devices
-                .into_iter()
-                .map(|device| (device.id, device.label))
-                .collect(),
-            _ => panic!("expected a one-time-code page"),
+            PageKind::OneTimeCode { devices } => Some(
+                devices
+                    .into_iter()
+                    .map(|device| (device.id, device.label))
+                    .collect(),
+            ),
+            _ => None,
         }
     }
 
@@ -423,13 +424,14 @@ mod tests {
     fn login_pages_in_both_themes() {
         for page in [BASE_LOGIN, V2_LOGIN] {
             assert!(matches!(kind(page), PageKind::UsernamePassword));
+            assert_eq!(devices(page), None);
         }
     }
 
     #[test]
     fn single_device_code_pages_in_both_themes() {
         for page in [BASE_OTP, V2_OTP] {
-            assert!(devices(page).is_empty());
+            assert_eq!(devices(page), Some(vec![]));
         }
     }
 
@@ -439,8 +441,8 @@ mod tests {
             (TOTP_DEVICE.to_owned(), TOTP_LABEL.to_owned()),
             (HOTP_DEVICE.to_owned(), "Hardware token".to_owned()),
         ];
-        assert_eq!(devices(BASE_DEVICES), expected);
-        assert_eq!(devices(V2_DEVICES), expected);
+        assert_eq!(devices(BASE_DEVICES), Some(expected.clone()));
+        assert_eq!(devices(V2_DEVICES), Some(expected));
     }
 
     #[test]
@@ -557,7 +559,7 @@ mod tests {
         let title = format!(r#"<span class="pf-v5-c-tile__title">{TOTP_LABEL}</span>"#);
         assert!(V2_DEVICES.contains(&title));
         let page = V2_DEVICES.replace(&title, &format!("<div><div>{title}</div></div>"));
-        assert_eq!(devices(&page)[0].1, TOTP_LABEL);
+        assert_eq!(devices(&page).unwrap()[0].1, TOTP_LABEL);
     }
 
     #[test]
@@ -600,7 +602,7 @@ mod tests {
         let title = format!(">{TOTP_LABEL}<");
         assert!(V2_DEVICES.contains(&title));
         let page = V2_DEVICES.replace(&title, ">Pho\u{1b}[31mne\u{202e}\n  1<");
-        assert_eq!(devices(&page)[0].1, "Pho[31mne 1");
+        assert_eq!(devices(&page).unwrap()[0].1, "Pho[31mne 1");
         let blank = V2_DEVICES.replace(&title, ">\u{7}\u{200b}<");
         assert!(is_unknown(&blank));
     }
