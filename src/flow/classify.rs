@@ -539,6 +539,27 @@ mod tests {
         assert!(matches!(kind(&page), PageKind::UsernamePassword));
     }
 
+    /// WebAuthn and recovery codes are not built yet. Pinning their pages as Unknown makes adding
+    /// them a deliberate change to these tests, never a silent widening of what is accepted.
+    #[test]
+    fn pages_for_unbuilt_authenticators_are_unknown() {
+        let webauthn = r#"<form id="webauth" method="post">
+            <input type="hidden" name="clientDataJSON">
+            <input type="hidden" name="authenticatorData">
+            <input type="hidden" name="signature">
+            <input type="hidden" name="credentialId">
+            <input type="hidden" name="userHandle">
+            <input type="hidden" name="error">
+        </form>"#;
+        let recovery = r#"<form id="kc-recovery-code-login-form" method="post">
+            <input type="text" name="recoveryCodeInput">
+            <input type="submit" name="login" value="Sign In">
+        </form>"#;
+        for page in [webauthn, recovery] {
+            assert!(is_unknown(page), "{page}");
+        }
+    }
+
     #[test]
     fn markup_inside_templates_is_inert() {
         // A form whose only login fields sit in a template has no live fields.
@@ -652,7 +673,8 @@ mod tests {
         assert!(V2_DEVICES.contains(&title));
         let page = V2_DEVICES.replace(&title, ">Pho\u{1b}[31mne\u{202e}\n  1\u{061c}<");
         assert_eq!(devices(&page).unwrap()[0].1, "Pho[31mne 1");
-        let marked = V2_DEVICES.replace(&title, ">\u{061c}Phone\u{061c}<");
+        // One character from each listed formatting range.
+        let marked = V2_DEVICES.replace(&title, ">\u{061c}Ph\u{200e}o\u{202a}n\u{2067}e\u{feff}<");
         assert_eq!(devices(&marked).unwrap()[0].1, "Phone");
         let blank = V2_DEVICES.replace(&title, ">\u{7}\u{200b}<");
         assert!(is_unknown(&blank));
