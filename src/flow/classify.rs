@@ -375,13 +375,22 @@ fn toggle_credential(onclick: &str, index: usize) -> Option<String> {
 }
 
 /// Device labels come from the page and are shown in a terminal: drop control and
-/// bidirectional-override characters, and collapse whitespace.
+/// bidirectional-formatting characters, and collapse whitespace. `is_control` covers only the
+/// Cc category, so the invisible Cf formatting marks are listed by hand, including the Arabic
+/// Letter Mark (U+061C).
 fn clean_label(text: &str) -> String {
     let kept: String = text
         .chars()
         .filter(|c| {
             !c.is_control()
-                && !matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+                && !matches!(
+                    c,
+                    '\u{061c}'
+                        | '\u{200b}'..='\u{200f}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2066}'..='\u{2069}'
+                        | '\u{feff}'
+                )
         })
         .collect();
     kept.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -641,8 +650,10 @@ mod tests {
     fn device_labels_lose_terminal_control_characters() {
         let title = format!(">{TOTP_LABEL}<");
         assert!(V2_DEVICES.contains(&title));
-        let page = V2_DEVICES.replace(&title, ">Pho\u{1b}[31mne\u{202e}\n  1<");
+        let page = V2_DEVICES.replace(&title, ">Pho\u{1b}[31mne\u{202e}\n  1\u{061c}<");
         assert_eq!(devices(&page).unwrap()[0].1, "Pho[31mne 1");
+        let marked = V2_DEVICES.replace(&title, ">\u{061c}Phone\u{061c}<");
+        assert_eq!(devices(&marked).unwrap()[0].1, "Phone");
         let blank = V2_DEVICES.replace(&title, ">\u{7}\u{200b}<");
         assert!(is_unknown(&blank));
     }
