@@ -71,7 +71,6 @@ pub(crate) fn classify(body: &[u8]) -> PageKind {
 
 /// A named form control a browser would submit.
 struct Control {
-    form: usize,
     name: String,
     kind: String,
     value: String,
@@ -102,7 +101,7 @@ struct Capture {
 #[derive(Default)]
 struct Scan {
     forms: usize,
-    form: Option<usize>,
+    in_form: bool,
     controls: Vec<Control>,
     labels: Vec<(String, String)>,
     tiles: Vec<Tile>,
@@ -143,9 +142,9 @@ impl Scan {
             }
         }
         match name {
-            b"form" if self.form.is_some() => self.suspicious = true,
+            b"form" if self.in_form => self.suspicious = true,
             b"form" => {
-                self.form = Some(self.forms);
+                self.in_form = true;
                 self.forms += 1;
             }
             b"input" | b"select" | b"textarea" | b"button" => self.control(tag),
@@ -185,17 +184,16 @@ impl Scan {
         let Some(name) = attribute(tag, "name").filter(|name| !name.is_empty()) else {
             return;
         };
-        let Some(form) = self.form else {
+        if !self.in_form {
             self.suspicious = true;
             return;
-        };
+        }
         let default_kind = if tag.name.as_slice() == b"button" {
             "submit"
         } else {
             "text"
         };
         self.controls.push(Control {
-            form,
             name,
             kind: attribute(tag, "type")
                 .map(|kind| kind.to_ascii_lowercase())
@@ -217,7 +215,7 @@ impl Scan {
 
     fn end(&mut self, name: &HtmlString) {
         if name.as_slice() == b"form" {
-            self.form = None;
+            self.in_form = false;
         }
         match self.capture.take() {
             Some(mut capture) if capture.tag == name.as_slice() => {
@@ -236,12 +234,9 @@ impl Scan {
     }
 
     fn kind(&self) -> Option<PageKind> {
-        if self.suspicious {
-            return None;
-        }
-        // Exactly one form may carry fields.
-        let form = self.controls.first()?.form;
-        if self.controls.iter().any(|control| control.form != form) {
+        // Every Keycloak login page has exactly one form; a second one, even empty, is not a
+        // page we know.
+        if self.suspicious || self.forms != 1 {
             return None;
         }
         if self.has("username") && self.has("password") {
@@ -489,6 +484,9 @@ mod tests {
             r#"<form action="/other"><input name="otp"></form></body>"#,
         );
         assert!(is_unknown(&second_form));
+        let empty_second_form =
+            BASE_LOGIN.replace("</body>", r#"<form action="/other"></form></body>"#);
+        assert!(is_unknown(&empty_second_form));
         assert!(is_unknown(&with_in_form(
             BASE_LOGIN,
             "<form><input name=\"otp\">"
