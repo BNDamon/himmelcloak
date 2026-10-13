@@ -266,10 +266,11 @@ impl Scan {
             .all(|control| allowed.contains(&control.name.as_str()))
     }
 
-    /// Each field appears once, except the device radios, which share one name.
+    /// Each field appears once, except the device radios, which share one name. Any other
+    /// radio that repeats a name is a duplicate like any other field.
     fn unique(&self) -> bool {
         self.controls.iter().enumerate().all(|(i, control)| {
-            control.kind == "radio"
+            (control.kind == "radio" && control.name == "selectedCredentialId")
                 || !self.controls[..i]
                     .iter()
                     .any(|earlier| earlier.name == control.name)
@@ -459,6 +460,18 @@ mod tests {
         assert!(is_unknown(&with_in_form(
             V2_LOGIN,
             r#"<input name="username">"#
+        )));
+    }
+
+    #[test]
+    fn only_device_radios_may_repeat() {
+        assert!(is_unknown(&with_in_form(
+            BASE_LOGIN,
+            r#"<input type="radio" name="username" value="mallory">"#
+        )));
+        assert!(is_unknown(&with_in_form(
+            V2_OTP,
+            r#"<input type="radio" name="otp" value="000000">"#
         )));
     }
 
