@@ -28,9 +28,13 @@ pub(crate) mod fetch;
 
 use std::time::{Duration, Instant};
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+
 use crate::authenticator::{WebAuthnAssertion, WebAuthnChallenge};
+use crate::crypto;
 use crate::error::{Error, Result};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Client-side limit on one whole login, matching Keycloak's default login timeout. Keycloak still
 /// enforces its own per-action timeouts.
@@ -167,16 +171,22 @@ pub struct AuthFlow {
     /// Cookies for this login attempt only; wiped when the flow ends or is dropped.
     pub(crate) jar: fetch::CookieJar,
     deadline: Instant,
-    state: FlowState,
+    lifecycle: FlowState,
+    pkce_verifier: Zeroizing<String>,
+    oauth_state: Zeroizing<String>,
+    nonce: Zeroizing<String>,
 }
 
 impl AuthFlow {
-    pub(crate) fn new(time_limit: Duration) -> Self {
-        Self {
+    pub(crate) fn new(time_limit: Duration) -> Result<Self> {
+        Ok(Self {
             jar: fetch::CookieJar::default(),
             deadline: Instant::now() + time_limit,
-            state: FlowState::Active,
-        }
+            lifecycle: FlowState::Active,
+            pkce_verifier: random_base64::<32>()?,
+            oauth_state: random_base64::<16>()?,
+            nonce: random_base64::<16>()?,
+        })
     }
 
     /// Abandon the login and wipe its session cookies. Later answers are rejected.
@@ -188,13 +198,13 @@ impl AuthFlow {
     /// True while the login can still take an answer. A login past its time limit ends here.
     pub fn is_active(&mut self) -> bool {
         self.expire_if_due();
-        self.state == FlowState::Active
+        self.lifecycle == FlowState::Active
     }
 
     /// Gate every step: a cancelled, expired, or finished login never reaches Keycloak again.
     pub(crate) fn ensure_active(&mut self) -> Result<()> {
         self.expire_if_due();
-        match self.state {
+        match self.lifecycle {
             FlowState::Active => Ok(()),
             FlowState::Cancelled => Err(Error::Cancelled),
             FlowState::Expired => Err(Error::Expired),
@@ -210,17 +220,47 @@ impl AuthFlow {
     }
 
     fn expire_if_due(&mut self) {
-        if self.state == FlowState::Active && Instant::now() >= self.deadline {
+        if self.lifecycle == FlowState::Active && Instant::now() >= self.deadline {
             self.end(FlowState::Expired);
         }
     }
 
     fn end(&mut self, state: FlowState) {
-        if self.state == FlowState::Active {
-            self.state = state;
+        if self.lifecycle == FlowState::Active {
+            self.lifecycle = state;
         }
         self.jar = fetch::CookieJar::default();
+        self.clear_secrets();
     }
+
+    pub(crate) fn pkce_verifier(&self) -> &str {
+        self.pkce_verifier.as_str()
+    }
+
+    pub(crate) fn oauth_state(&self) -> &str {
+        self.oauth_state.as_str()
+    }
+
+    pub(crate) fn nonce(&self) -> &str {
+        self.nonce.as_str()
+    }
+
+    fn clear_secrets(&mut self) {
+        self.pkce_verifier.zeroize();
+        self.oauth_state.zeroize();
+        self.nonce.zeroize();
+    }
+}
+
+impl Drop for AuthFlow {
+    fn drop(&mut self) {
+        self.clear_secrets();
+    }
+}
+
+fn random_base64<const N: usize>() -> Result<Zeroizing<String>> {
+    let bytes = crypto::random_bytes::<N>()?;
+    Ok(Zeroizing::new(URL_SAFE_NO_PAD.encode(bytes.as_slice())))
 }
 
 /// A Keycloak required action: UPDATE_PASSWORD, UPDATE_PROFILE, or TERMS_AND_CONDITIONS. Actions
@@ -325,7 +365,7 @@ mod tests {
     }
 
     fn flow_with_cookie(time_limit: Duration) -> AuthFlow {
-        let mut flow = AuthFlow::new(time_limit);
+        let mut flow = AuthFlow::new(time_limit).unwrap();
         let keycloak = url::Url::parse("https://keycloak.test/realms/test").unwrap();
         flow.jar.seed_session_cookie(&keycloak);
         assert!(!flow.jar.is_empty());
@@ -334,7 +374,7 @@ mod tests {
 
     #[test]
     fn active_flow_reaches_the_driver() {
-        let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT);
+        let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
         assert!(flow.is_active());
         assert!(matches!(
             driver::advance(&mut flow, password()),
@@ -343,11 +383,34 @@ mod tests {
     }
 
     #[test]
+    fn each_flow_has_unique_base64url_secrets() {
+        let first = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+        let second = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+        let valid_base64url = |value: &str| {
+            value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        };
+        assert_eq!(first.pkce_verifier().len(), 43);
+        assert_eq!(first.oauth_state().len(), 22);
+        assert_eq!(first.nonce().len(), 22);
+        assert!(valid_base64url(first.pkce_verifier()));
+        assert!(valid_base64url(first.oauth_state()));
+        assert!(valid_base64url(first.nonce()));
+        assert_ne!(first.pkce_verifier(), second.pkce_verifier());
+        assert_ne!(first.oauth_state(), second.oauth_state());
+        assert_ne!(first.nonce(), second.nonce());
+    }
+
+    #[test]
     fn cancelled_flow_rejects_every_later_step() {
         let mut flow = flow_with_cookie(DEFAULT_LOGIN_TIMEOUT);
         flow.cancel();
         assert!(!flow.is_active());
         assert!(flow.jar.is_empty());
+        assert!(flow.pkce_verifier().is_empty());
+        assert!(flow.oauth_state().is_empty());
+        assert!(flow.nonce().is_empty());
         assert!(matches!(
             driver::advance(&mut flow, password()),
             Err(Error::Cancelled)
@@ -364,6 +427,9 @@ mod tests {
             Err(Error::Expired)
         ));
         assert!(flow.jar.is_empty());
+        assert!(flow.pkce_verifier().is_empty());
+        assert!(flow.oauth_state().is_empty());
+        assert!(flow.nonce().is_empty());
         assert!(matches!(driver::step(&mut flow), Err(Error::Expired)));
     }
 
@@ -395,6 +461,9 @@ mod tests {
         let mut flow = flow_with_cookie(DEFAULT_LOGIN_TIMEOUT);
         flow.finish().unwrap();
         assert!(flow.jar.is_empty());
+        assert!(flow.pkce_verifier().is_empty());
+        assert!(flow.oauth_state().is_empty());
+        assert!(flow.nonce().is_empty());
         flow.cancel();
         assert!(!flow.is_active());
         assert!(matches!(

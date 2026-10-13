@@ -232,6 +232,22 @@ impl PublicClientApplication {
         )
     }
 
+    pub(crate) fn authorization_url(&self, start: &Start, flow: &mut AuthFlow) -> Result<url::Url> {
+        flow.ensure_active()?;
+        token::authorization_url(
+            &self.metadata.authorization_endpoint,
+            token::AuthorizationParameters {
+                client_id: &self.config.client_id,
+                redirect_uri: &self.config.redirect_uri,
+                login_hint: start.login_hint.as_deref(),
+                scopes: &start.scopes,
+                pkce_verifier: flow.pkce_verifier(),
+                state: flow.oauth_state(),
+                nonce: flow.nonce(),
+            },
+        )
+    }
+
     pub async fn initiate_auth_flow(&self, _start: Start) -> Result<(AuthFlow, AuthStep)> {
         Err(Error::NotImplemented)
     }
@@ -263,7 +279,7 @@ mod tests {
     use serde_json::{json, Value};
     use url::Url;
 
-    use super::PublicClientApplication;
+    use super::{PublicClientApplication, Start};
     use crate::config::Config;
     use crate::error::{Error, Result};
     use crate::flow::Tokens;
@@ -308,6 +324,33 @@ mod tests {
             transport: Arc::new(RecordedTransport(Mutex::new(responses.into()))),
             jwks: RwLock::new(jwks),
         }
+    }
+
+    #[test]
+    fn authorization_request_uses_the_flow_secrets() {
+        let client = app(json!({}), vec![]);
+        let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+        let start = Start {
+            login_hint: Some("alice@example.test".to_owned()),
+            scopes: vec!["profile".to_owned()],
+        };
+        let url = client.authorization_url(&start, &mut flow).unwrap();
+        let parameters: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(parameters.get("state").unwrap(), flow.oauth_state());
+        assert_eq!(parameters.get("nonce").unwrap(), flow.nonce());
+        assert_eq!(parameters.get("code_challenge_method").unwrap(), "S256");
+        assert_eq!(parameters.get("scope").unwrap(), "openid profile");
+        assert_eq!(parameters.get("login_hint").unwrap(), "alice@example.test");
+
+        let mut ended = flow;
+        ended.cancel();
+        assert!(client.authorization_url(&start, &mut ended).is_err());
+
+        let mut expired = AuthFlow::new(Duration::ZERO).unwrap();
+        assert_eq!(
+            client.authorization_url(&start, &mut expired).err(),
+            Some(Error::Expired)
+        );
     }
 
     #[cfg(feature = "password")]
@@ -508,7 +551,7 @@ mod tests {
     #[tokio::test]
     async fn continue_rejects_a_cancelled_login() {
         let client = app(json!({}), vec![]);
-        let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT);
+        let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
         assert_eq!(
             client.continue_auth_flow(&mut flow, password()).await.err(),
             Some(Error::NotImplemented)
@@ -523,7 +566,7 @@ mod tests {
     #[tokio::test]
     async fn continue_rejects_an_expired_login() {
         let client = app(json!({}), vec![]);
-        let mut flow = AuthFlow::new(Duration::ZERO);
+        let mut flow = AuthFlow::new(Duration::ZERO).unwrap();
         assert_eq!(
             client.continue_auth_flow(&mut flow, password()).await.err(),
             Some(Error::Expired)
