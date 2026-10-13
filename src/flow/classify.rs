@@ -106,6 +106,9 @@ struct Scan {
     labels: Vec<(String, String)>,
     tiles: Vec<Tile>,
     capture: Option<Capture>,
+    /// How many `<template>` elements enclose the current position. Their contents are inert:
+    /// never shown or submitted, so nothing inside them counts.
+    templates: usize,
     /// A structure a real Keycloak page never has: nested forms, or controls that submit
     /// outside their form.
     suspicious: bool,
@@ -123,7 +126,7 @@ impl Scan {
             match token {
                 Token::StartTag(tag) => scan.start(&tag),
                 Token::EndTag(tag) => scan.end(&tag.name),
-                Token::String(text) => {
+                Token::String(text) if scan.templates == 0 => {
                     if let Some(capture) = &mut scan.capture {
                         capture.text.push_str(&String::from_utf8_lossy(&text.value));
                     }
@@ -136,6 +139,12 @@ impl Scan {
 
     fn start(&mut self, tag: &StartTag<()>) {
         let name = tag.name.as_slice();
+        if name == b"template" && !tag.self_closing {
+            self.templates += 1;
+        }
+        if self.templates > 0 {
+            return;
+        }
         if let Some(capture) = &mut self.capture {
             if capture.tag == name && !tag.self_closing {
                 capture.depth += 1;
@@ -214,6 +223,12 @@ impl Scan {
     }
 
     fn end(&mut self, name: &HtmlString) {
+        if self.templates > 0 {
+            if name.as_slice() == b"template" {
+                self.templates -= 1;
+            }
+            return;
+        }
         if name.as_slice() == b"form" {
             self.in_form = false;
         }
@@ -511,6 +526,20 @@ mod tests {
         let page = with_in_form(
             BASE_LOGIN,
             r#"<script>document.write('<input name="email">')</script>"#,
+        );
+        assert!(matches!(kind(&page), PageKind::UsernamePassword));
+    }
+
+    #[test]
+    fn markup_inside_templates_is_inert() {
+        // A form whose only login fields sit in a template has no live fields.
+        assert!(is_unknown(
+            r#"<form><template><input name="username"><input type="password" name="password"></template></form>"#
+        ));
+        // Inert fields, forms, and nested templates do not change a real page.
+        let page = with_in_form(
+            BASE_LOGIN,
+            r#"<template><input name="email"><template><form></form></template><input name="otp"></template>"#,
         );
         assert!(matches!(kind(&page), PageKind::UsernamePassword));
     }
