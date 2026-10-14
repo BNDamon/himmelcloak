@@ -68,13 +68,58 @@ for USB, platform, and virtual test authenticators. Page parsing and theme
 compatibility require tests against real Keycloak releases; custom-theme
 independence is a design goal, not a current guarantee.
 
+### Software authenticator
+
+Enable `webauthn-virtual` to use
+`himmelcloak::authenticator::software::SoftwareAuthenticator`. It implements
+`WebAuthnAdapter` with one locally provisioned, in-memory ES256 credential bound
+to an RP ID. Supply `credential_id()` in the request's allowed-credentials list;
+the RP ID must match the provisioned RP. `public_key()` exports the 65-byte
+uncompressed SEC1 / ANSI X9.63 P-256 public key (`0x04 || x || y`) for fixture
+registration or signature verification. It is not a COSE key or registration
+response.
+
+Assertion data follows
+[WebAuthn §6.1, Authenticator Data](https://www.w3.org/TR/webauthn-3/#sctn-authenticator-data):
+the RP ID hash, user-presence flag, and signature counter occupy 37 bytes.
+Assertions use a DER-encoded P-256 ECDSA signature over
+`authenticatorData || client_data_hash`, hashed with SHA-256. The counter starts
+at zero and advances only after signing and encoding succeed; overflow is
+rejected without changing state.
+
+Calling the adapter simulates user presence. Required user verification returns
+`UnsupportedFactor` so a caller can choose another authenticator; Preferred and
+Discouraged produce UV=0. Only explicitly allowed credentials are supported.
+The internal `RefCell` makes the authenticator non-`Sync`; sharing it across
+Tokio tasks requires a mutex around mutable credential state. Borrow conflicts
+return `Crypto`. Keys and counters are lost when the instance is dropped.
+
+Keycloak registration, attestation, persistent storage, discoverable credentials,
+CTAP2 messages, CBOR parsing, and a live WebAuthn login fixture remain pending.
+The public credential ID and key allow a fixture to register the credential
+without accessing private signing state.
+
+Unit tests check the assertion-data layout and an independently calculated RP
+ID hash, verify DER signatures using the public key, reject tampering, and
+exercise request validation, borrow conflicts, counter updates, and overflow.
+CI runs these tests with `webauthn-virtual` enabled on pushes and pull requests.
+For a local run after building the native dependencies:
+
+```sh
+./scripts/with-native.sh cargo test --locked --lib --no-default-features --features webauthn-virtual
+```
+
+The native wrapper locates the pinned wolfSSL and libcurl build. Transport tests
+need permission to open loopback sockets; the live HTTPS suite also requires
+Docker. See [Testing](Testing.md).
+
 ## Planned authentication methods
 
 | Method | Intended mechanism | Current status |
 | --- | --- | --- |
 | Password | Direct Access Grant; later native flow | Direct grant implemented |
 | TOTP | Direct Access Grant; later native flow | Optional direct-grant field implemented; live TOTP fixture pending |
-| WebAuthn / passkeys | Native flow and authenticator adapter | Planned |
+| WebAuthn / passkeys | Native flow and authenticator adapter | Virtual adapter implemented; native flow and live fixture pending |
 | SMS / email OTP | Native flow | Planned |
 | Recovery codes | Native flow | Planned |
 | X.509 / PIV / CAC | Mutual TLS and Keycloak flow | Planned |

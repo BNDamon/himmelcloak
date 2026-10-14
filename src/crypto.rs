@@ -49,9 +49,14 @@ pub(crate) fn sha256(data: &[u8]) -> Result<[u8; 32]> {
     Ok(digest)
 }
 
-pub(crate) fn random_bytes<const N: usize>() -> Result<Zeroizing<[u8; N]>> {
+/// Create a secure RNG after initializing wolfCrypt through the shared path.
+pub(crate) fn rng() -> Result<RNG> {
     init()?;
-    let rng = RNG::new().map_err(|_| Error::Crypto)?;
+    RNG::new().map_err(|_| Error::Crypto)
+}
+
+pub(crate) fn random_bytes<const N: usize>() -> Result<Zeroizing<[u8; N]>> {
+    let rng = rng()?;
     let mut output = Zeroizing::new([0u8; N]);
     rng.generate_block(&mut *output)
         .map_err(|_| Error::Crypto)?;

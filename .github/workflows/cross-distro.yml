@@ -33,7 +33,7 @@ jobs:
           - sle-bci-16.0
           - rockylinux-9
           - fedora
-        features: [default, none, password, gov, passwordless]
+        features: [default, none, password, gov, passwordless, webauthn-virtual]
         # Pinned to the digests publish-ci-image.yml lists in its run summary; bump them together.
         include:
           - { distro: debian-12, digest: "sha256:a4b388862188a79ffe924cd10dcde593fc2b7d8395292e8bf226b655f5f7dcae" }

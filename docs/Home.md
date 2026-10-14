@@ -15,3 +15,6 @@ resumable login flow for Linux applications.
 | [[Testing]] | Docker oracle and CI gates |
 | [[Project Structure]] | Workspace layout |
 | [[Licensing]] | Source and combined-build terms |
+
+The [software authenticator](Architecture.md#software-authenticator) section
+describes the virtual WebAuthn adapter and its current limits.
