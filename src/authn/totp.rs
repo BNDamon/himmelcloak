@@ -19,12 +19,13 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 //! TOTP/HOTP factor. Feature: `totp`.
-//! Direct-grant `totp` param (fast path) OR the flow-driver OTP step. `Challenge::OneTimeCode` / `Answer::OneTimeCode`.
-
+//! Direct-grant `totp` param (fast path) OR the flow-driver OTP step.
+//! `Challenge::OneTimeCode` / `Answer::OneTimeCode`.
 
 use std::sync::OnceLock;
 
 use wolfssl_wolfcrypt::hmac::HMAC;
+use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 
@@ -52,9 +53,11 @@ pub(crate) fn hotp(
     counter: u64,
     algorithm: OtpAlgorithm,
     digits: u32,
-) -> Result<String> {
-    if secret.is_empty() {
-        return Err(Error::InvalidConfiguration("OTP secret must not be empty"));
+) -> Result<Zeroizing<String>> {
+    if secret.len() < 16 {
+        return Err(Error::InvalidConfiguration(
+            "OTP secret must be at least 16 bytes",
+        ));
     }
     if !(6..=8).contains(&digits) {
         return Err(Error::InvalidConfiguration(
@@ -72,11 +75,11 @@ pub(crate) fn hotp(
         digest[offset + 3],
     ]) & 0x7fff_ffff;
 
-    Ok(format!(
+    Ok(Zeroizing::new(format!(
         "{value:0width$}",
         value = value % 10_u32.pow(digits),
         width = digits as usize
-    ))
+    )))
 }
 
 /// Generate a TOTP code for a Unix timestamp and time period.
@@ -86,7 +89,7 @@ pub(crate) fn totp(
     period: u32,
     algorithm: OtpAlgorithm,
     digits: u32,
-) -> Result<String> {
+) -> Result<Zeroizing<String>> {
     if period == 0 {
         return Err(Error::InvalidConfiguration("OTP period must not be zero"));
     }
@@ -151,13 +154,13 @@ fn init() -> Result<()> {
         .copied()
 }
 
-fn hmac(hash_type: i32, key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
+fn hmac(hash_type: i32, key: &[u8], data: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
     init()?;
 
     let mut hmac = HMAC::new(hash_type, key).map_err(|_| Error::Crypto)?;
     hmac.update(data).map_err(|_| Error::Crypto)?;
 
-    let mut output = vec![0u8; hmac.get_hmac_size().map_err(|_| Error::Crypto)?];
+    let mut output = Zeroizing::new(vec![0u8; hmac.get_hmac_size().map_err(|_| Error::Crypto)?]);
     hmac.finalize(&mut output).map_err(|_| Error::Crypto)?;
 
     Ok(output)
@@ -178,85 +181,124 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{hotp, verify_and_advance_hotp, verify_totp, OtpAlgorithm};
+    use super::{hotp, totp, verify_and_advance_hotp, verify_hotp, verify_totp, OtpAlgorithm};
+
+    const SECRET: &[u8] = b"12345678901234567890";
 
     #[test]
     fn totp_matches_rfc_6238_sha1_vector() {
         assert!(
-            verify_totp(
-                b"12345678901234567890",
-                59,
-                30,
-                OtpAlgorithm::Sha1,
-                8,
-                "94287082",
-            )
-            .expect("valid TOTP input")
+            verify_totp(SECRET, 59, 30, OtpAlgorithm::Sha1, 8, "94287082",)
+                .expect("valid TOTP input")
         );
     }
 
     #[test]
     fn totp_matches_rfc_6238_sha256_vector() {
-        assert!(
-            verify_totp(
-                b"12345678901234567890123456789012",
-                59,
-                30,
-                OtpAlgorithm::Sha256,
-                8,
-                "46119246",
-            )
-            .expect("valid TOTP input")
-        );
+        assert!(verify_totp(
+            b"12345678901234567890123456789012",
+            59,
+            30,
+            OtpAlgorithm::Sha256,
+            8,
+            "46119246",
+        )
+        .expect("valid TOTP input"));
     }
 
     #[test]
     fn totp_matches_rfc_6238_sha512_vector() {
+        assert!(verify_totp(
+            b"1234567890123456789012345678901234567890123456789012345678901234",
+            59,
+            30,
+            OtpAlgorithm::Sha512,
+            8,
+            "90693936",
+        )
+        .expect("valid TOTP input"));
+    }
+
+    #[test]
+    fn rejects_incorrect_totp_code() {
         assert!(
-            verify_totp(
-                b"1234567890123456789012345678901234567890123456789012345678901234",
-                59,
-                30,
-                OtpAlgorithm::Sha512,
-                8,
-                "90693936",
-            )
-            .expect("valid TOTP input")
+            !verify_totp(SECRET, 59, 30, OtpAlgorithm::Sha1, 8, "00000000",)
+                .expect("valid TOTP input")
         );
     }
 
     #[test]
+    fn rejects_invalid_otp_configuration() {
+        let short_secret = b"123456789012345";
+        let minimum_secret = b"1234567890123456";
+
+        for (secret, digits, should_succeed) in [
+            (&short_secret[..], 6, false),
+            (&minimum_secret[..], 6, true),
+            (SECRET, 5, false),
+            (SECRET, 9, false),
+        ] {
+            assert_eq!(
+                hotp(secret, 0, OtpAlgorithm::Sha1, digits).is_ok(),
+                should_succeed,
+            );
+        }
+
+        assert!(totp(SECRET, 0, 0, OtpAlgorithm::Sha1, 6).is_err());
+    }
+
+    #[test]
     fn hotp_advances_the_counter_after_a_valid_code() {
-    let secret = b"12345678901234567890";
-    let mut counter = 0;
+        let mut counter = 0;
 
-    assert_eq!(
-        hotp(secret, counter, OtpAlgorithm::Sha1, 6).expect("valid HOTP input"),
-        "755224"
-    );
+        assert_eq!(
+            hotp(SECRET, counter, OtpAlgorithm::Sha1, 6)
+                .expect("valid HOTP input")
+                .as_str(),
+            "755224"
+        );
 
-    assert!(
-        verify_and_advance_hotp(
-            secret,
+        assert!(
+            verify_and_advance_hotp(SECRET, &mut counter, OtpAlgorithm::Sha1, 6, "755224",)
+                .expect("valid HOTP input")
+        );
+        assert_eq!(counter, 1);
+
+        assert!(
+            verify_and_advance_hotp(SECRET, &mut counter, OtpAlgorithm::Sha1, 6, "287082",)
+                .expect("valid HOTP input")
+        );
+        assert_eq!(counter, 2);
+    }
+
+    #[test]
+    fn rejected_hotp_code_does_not_advance_counter() {
+        let mut counter = 0;
+
+        assert!(
+            !verify_hotp(SECRET, counter, OtpAlgorithm::Sha1, 6, "000000")
+                .expect("valid HOTP input")
+        );
+        assert!(
+            !verify_and_advance_hotp(SECRET, &mut counter, OtpAlgorithm::Sha1, 6, "000000",)
+                .expect("valid HOTP input")
+        );
+        assert_eq!(counter, 0);
+    }
+
+    #[test]
+    fn exhausted_hotp_counter_does_not_advance() {
+        let mut counter = u64::MAX;
+        let code = hotp(SECRET, counter, OtpAlgorithm::Sha1, 6).expect("valid HOTP input");
+
+        assert!(verify_and_advance_hotp(
+            SECRET,
             &mut counter,
             OtpAlgorithm::Sha1,
             6,
-            "755224",
+            code.as_str(),
         )
-        .expect("valid HOTP input")
-    );
-    assert_eq!(counter, 1);
-
-    assert!(
-        verify_and_advance_hotp(
-            secret,
-            &mut counter,
-            OtpAlgorithm::Sha1,
-            6,
-            "287082",
-        )
-        .expect("valid HOTP input")
-    );
-    assert_eq!(counter, 2);
-}
+        .is_err());
+        assert_eq!(counter, u64::MAX);
+    }
 }

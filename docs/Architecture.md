@@ -118,7 +118,7 @@ Docker. See [Testing](Testing.md).
 | Method | Intended mechanism | Current status |
 | --- | --- | --- |
 | Password | Direct Access Grant; later native flow | Direct grant implemented |
-| TOTP | Direct Access Grant; later native flow | Optional direct-grant field implemented; live TOTP fixture pending |
+| TOTP / HOTP | wolfCrypt HMAC generation and verification; Direct Access Grant; later native flow | SHA-1, SHA-256, and SHA-512 generation and verification implemented; Keycloak credential persistence and live TOTP fixture pending |
 | WebAuthn / passkeys | Native flow and authenticator adapter | Virtual adapter implemented; native flow and live fixture pending |
 | SMS / email OTP | Native flow | Planned |
 | Recovery codes | Native flow | Planned |
