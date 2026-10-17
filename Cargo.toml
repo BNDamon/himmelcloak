@@ -83,7 +83,7 @@ passwordless = ["webauthn","webauthn-usb","x509","recovery"]
 [dependencies]
 base64 = "0.23"
 curl = { version = "=0.4.50", default-features = false }
-curl-sys = { version = "=0.4.90", default-features = false }
+curl-sys = { version = "=0.4.91", default-features = false }
 # Browser-compatible HTML tokenizer for reading Keycloak's login forms; no dependencies.
 html5gum = { version = "0.8", default-features = false }
 serde = { version = "1", features = ["derive"] }
