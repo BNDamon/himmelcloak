@@ -8,8 +8,10 @@ wrapper and wolfSSL C library (and optionally wolfTPM), so the combined work mus
 under the GPL. Hardware features may add further licensing obligations. No ordinary build is
 claimed to be FIPS validated.
 
-A `cargo deny check licenses` CI gate is planned to fail the build if a dependency with an
-incompatible license is added.
+The `Supply-chain licenses and advisories` CI gate runs `cargo deny --locked --all-features
+check licenses advisories` on every push and pull request. It rejects licenses outside
+`deny.toml`, known vulnerabilities, and yanked crates, including development dependencies.
+See [CI gates and runtime baseline](CI.md) for merge requirements and timing evidence.
 
 ## Copyright
 

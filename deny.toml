@@ -1,5 +1,6 @@
 # cargo-deny config. License allow-list plus advisory checks.
 [licenses]
+include-dev = true
 allow = [
   "LGPL-3.0-or-later",
   "GPL-3.0-or-later",
@@ -11,4 +12,5 @@ allow = [
 ]
 
 [advisories]
-# Use cargo-deny defaults (deny known-vulnerable crates).
+# Vulnerabilities are errors by default. No advisory IDs are ignored.
+yanked = "deny"
