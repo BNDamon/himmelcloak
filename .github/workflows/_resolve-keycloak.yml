@@ -24,7 +24,7 @@ jobs:
       matrix: ${{ steps.set.outputs.matrix }}
       latest-stable: ${{ steps.set.outputs.latest-stable }}
     steps:
-      - name: Resolve stable tag, development ref, and image digests
+      - name: Resolve stable tag and build channel matrix
         id: set
         run: |
           set -euo pipefail

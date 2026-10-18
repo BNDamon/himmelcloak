@@ -11,55 +11,17 @@ permissions:
 jobs:
   runtime:
     name: Record CI runtime
+    if: ${{ github.event.workflow_run.conclusion != 'cancelled' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      # Do not check out or execute code from the triggering run: it can be a fork PR.
+      # Use the trusted revision of this workflow from the default branch,
+      # never the triggering PR's head or an artifact supplied by that PR.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
       - name: Log workflow and job durations
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 - <<'PY'
-          import datetime
-          import json
-          import os
-          import urllib.request
-
-          with open(os.environ['GITHUB_EVENT_PATH']) as stream:
-              run = json.load(stream)['workflow_run']
-          def timestamp(value):
-              return datetime.datetime.fromisoformat(value.replace('Z', '+00:00'))
-          def cell(value):
-              return str(value).replace('|', '/').replace('\n', ' ')
-          jobs = []
-          page = 1
-          while True:
-              url = (f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}"
-                     f"/actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100&page={page}")
-              request = urllib.request.Request(url, headers={
-                  'Authorization': f"Bearer {os.environ['GH_TOKEN']}",
-                  'Accept': 'application/vnd.github+json',
-              })
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  batch = json.load(response)['jobs']
-              jobs.extend(batch)
-              if len(batch) < 100:
-                  break
-              page += 1
-          completed = [job for job in jobs if job.get('started_at') and job.get('completed_at')]
-          lines = [f"## Runtime: {cell(run['name'])}",
-                   f"Run: {run['html_url']} (attempt {run['run_attempt']})",
-                   f"Commit: `{run['head_sha']}`; result: {run['conclusion']}",
-                   '', '| Job | Result | Seconds |', '| --- | --- | ---: |']
-          for job in completed:
-              seconds = (timestamp(job['completed_at']) - timestamp(job['started_at'])).total_seconds()
-              lines.append(f"| {cell(job['name'])} | {cell(job['conclusion'])} | {seconds:.0f} |")
-          if completed:
-              seconds = (max(timestamp(job['completed_at']) for job in completed)
-                         - timestamp(run['run_started_at'])).total_seconds()
-              lines.append(f"\nWorkflow elapsed from run start through last job: {seconds:.0f} s")
-          report = '\n'.join(lines) + '\n'
-          print(report)
-          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as stream:
-              stream.write(report)
-          PY
+        run: python3 scripts/ci/runtime_report.py
