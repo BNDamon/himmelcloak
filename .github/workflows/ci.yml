@@ -1,7 +1,6 @@
 name: Core build and unit tests
 on:
   push:
-    branches: ['main', 'release/**']
   pull_request:
   workflow_dispatch:
 
@@ -13,6 +12,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  cargo-deny:
+    name: Supply-chain licenses and advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+        with:
+          rust-version: '1.95.0'
+          arguments: --locked --all-features
+          command: check
+          command-arguments: licenses advisories
+
   quality:
     name: Rust format, Clippy, unit tests
     runs-on: ubuntu-latest

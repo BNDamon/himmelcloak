@@ -1,13 +1,13 @@
 name: Resolve Keycloak images
 
 # The stable release comes from Keycloak's numeric release tags. Its official
-# nightly image is the development build; both images are pinned by digest for
-# the duration of a CI run.
+# nightly image is the development build. Each login job resolves its own digest
+# so nightly registry failures cannot prevent the stable job from starting.
 on:
   workflow_call:
     outputs:
       matrix:
-        description: 'Stable and nightly Keycloak images resolved by digest'
+        description: 'Stable and nightly Keycloak image references'
         value: ${{ jobs.resolve.outputs.matrix }}
       latest-stable:
         description: 'Latest stable Keycloak source tag'
@@ -35,26 +35,11 @@ jobs:
             echo '::error::Could not resolve a stable Keycloak release tag'
             exit 1
           fi
-          MAIN_SHA=$(git ls-remote --heads https://github.com/keycloak/keycloak.git main | awk '{print $1}')
-          if [ -z "${MAIN_SHA:-}" ]; then
-            echo '::error::Could not resolve Keycloak main'
-            exit 1
-          fi
-          STABLE_IMAGE="quay.io/keycloak/keycloak:$TAG"
-          NIGHTLY_IMAGE='quay.io/keycloak/keycloak:nightly'
-          docker pull "$STABLE_IMAGE"
-          docker pull "$NIGHTLY_IMAGE"
-          STABLE_DIGEST=$(docker image inspect "$STABLE_IMAGE" --format '{{index .RepoDigests 0}}')
-          NIGHTLY_DIGEST=$(docker image inspect "$NIGHTLY_IMAGE" --format '{{index .RepoDigests 0}}')
-          echo "Stable Keycloak: $TAG ($STABLE_DIGEST)"
-          echo "Keycloak main HEAD at resolution: $MAIN_SHA"
-          echo "Keycloak nightly image: $NIGHTLY_DIGEST"
           echo "latest-stable=$TAG" >> "$GITHUB_OUTPUT"
-          MATRIX=$(jq -nc --arg tag "$TAG" --arg main "$MAIN_SHA" \
-            --arg stable "$STABLE_DIGEST" --arg nightly "$NIGHTLY_DIGEST" '{
+          MATRIX=$(jq -nc --arg tag "$TAG" '{
               include: [
-                {"name":("stable " + $tag),"keycloak-ref":$tag,"keycloak-image":$stable},
-                {"name":"nightly","keycloak-ref":"nightly","keycloak-main-head":$main,"keycloak-image":$nightly}
+                {"name":"Keycloak stable login","keycloak-ref":$tag,"keycloak-image":("quay.io/keycloak/keycloak:" + $tag),"experimental":false},
+                {"name":"Keycloak nightly login","keycloak-ref":"nightly","keycloak-image":"quay.io/keycloak/keycloak:nightly","experimental":true}
               ]
             }')
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
