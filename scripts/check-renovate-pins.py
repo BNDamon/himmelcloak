@@ -25,7 +25,7 @@ import re
 import sys
 
 ROOT = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else pathlib.Path(__file__).resolve().parents[1])
-RUST_PINS = {"rust-toolchain.toml": 1, "Cargo.toml": 1, "tests/build/Dockerfile": 2}
+RUST_PINS = {".github/workflows/ci.yml": 1, "rust-toolchain.toml": 1, "Cargo.toml": 1, "tests/build/Dockerfile": 2}
 
 
 def matches(manager):
