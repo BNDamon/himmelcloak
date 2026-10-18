@@ -56,7 +56,7 @@ jobs:
         run: |
           docker compose -f tests/keycloak/docker-compose.yml run --rm \
             -e HIMMELCLOAK_TEST_VERBOSE=1 tester \
-            cargo test --locked --test live_keycloak -- --ignored --nocapture
+            cargo test --locked --lib --test live_keycloak -- --ignored --nocapture
       - name: Show Keycloak authentication events
         if: always()
         run: |
