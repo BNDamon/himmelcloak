@@ -1,0 +1,31 @@
+{
+  "run": {
+    "id": 123,
+    "run_attempt": 2,
+    "name": "Core build and unit tests",
+    "html_url": "https://github.com/example/repo/actions/runs/123",
+    "head_sha": "abc123",
+    "conclusion": "success",
+    "run_started_at": "2026-10-17T17:31:00Z"
+  },
+  "jobs": [
+    {
+      "name": "build|unit\nnext",
+      "conclusion": "success",
+      "started_at": "2026-10-17T17:31:10Z",
+      "completed_at": "2026-10-17T17:31:40Z"
+    },
+    {
+      "name": "missing start",
+      "conclusion": "success",
+      "started_at": null,
+      "completed_at": "2026-10-17T17:31:40Z"
+    },
+    {
+      "name": "missing end",
+      "conclusion": "failure",
+      "started_at": "2026-10-17T17:31:10Z",
+      "completed_at": null
+    }
+  ]
+}
