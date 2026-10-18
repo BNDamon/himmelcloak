@@ -7,5 +7,6 @@
 - [[Development Plan]]
 - [[API Reference]]
 - [[Testing]]
+- [[CI]]
 - [[Project Structure]]
 - [[Licensing]]

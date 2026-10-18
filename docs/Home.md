@@ -13,6 +13,7 @@ resumable login flow for Linux applications.
 | [[Development Plan]] | Core milestones and independent feature PRs |
 | [[API Reference]] | Current public Rust interface |
 | [[Testing]] | Docker oracle and CI gates |
+| [[CI]] | Required merge checks and runtime baseline |
 | [[Project Structure]] | Workspace layout |
 | [[Licensing]] | Source and combined-build terms |
 

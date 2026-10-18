@@ -12,6 +12,7 @@ publishes the read-only wiki mirror from `docs/`.
 | [Development Plan](Development-Plan.md) | Core milestones, feature PRs, and CI contract |
 | [API Reference](API-Reference.md) | Current Rust public API |
 | [Testing](Testing.md) | Keycloak oracle, CI matrix, and test commands |
+| [CI](CI.md) | Required merge checks and runtime baseline |
 | [Project Structure](Project-Structure.md) | Crate and module layout |
 | [Licensing](Licensing.md) | Source and combined-build licensing |
 

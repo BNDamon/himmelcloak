@@ -9,7 +9,7 @@ under the GPL. Hardware features may add further licensing obligations. No ordin
 claimed to be FIPS validated.
 
 The `Supply-chain licenses and advisories` CI gate runs `cargo deny --locked --all-features
-check licenses advisories` on every push and pull request. It rejects licenses outside
+check licenses advisories` on pushes to main/release branches and every pull request. It rejects licenses outside
 `deny.toml`, known vulnerabilities, and yanked crates, including development dependencies.
 See [CI gates and runtime baseline](CI.md) for merge requirements and timing evidence.
 

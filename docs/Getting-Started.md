@@ -18,7 +18,9 @@ This builds a test image with the pinned Rust toolchain, the pinned wolfSSL stab
 Keycloak with the seeded realm, and runs real HTTPS login tests.
 `KEYCLOAK_IMAGE=quay.io/keycloak/keycloak:nightly make test-live` selects the nightly server. CI
 resolves the latest stable Keycloak release and the nightly image to exact image digests at run
-time, then requires both to pass on every push and PR.
+time. Stable login is required for merging; nightly failures remain visible in an optional
+check without cancelling stable. See [CI gates and runtime baseline](CI.md) for triggers
+and branch-rule settings.
 
 On Linux, `make native` builds the same native libraries into `.native`. `make build`, `make test`,
 and `make lint` use them. The local build requires Autotools, libtool, pkg-config, clang, and a

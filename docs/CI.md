@@ -9,19 +9,24 @@ Configure the main and release branch rules to require these exact check names:
 - `Keycloak stable login`
 
 These checks have no path filters. Core CI, including cargo-deny, runs on every
-push and pull request. Keycloak stable runs on every pull request and pushes to
-main/release branches. Use unique check names in other workflows. If a merge
+push to main/release branches and every pull request. Keycloak uses the same
+triggers, with manual dispatch also available. Use unique check names in other workflows. If a merge
 queue is enabled, add its `merge_group` event before requiring these checks there.
 Repository administrators must apply the branch rules in GitHub; a workflow alone
 does not prevent merging. This change documents the required settings and does
 not claim that the remote branch rules have been configured.
 
 Keep `Keycloak nightly login` and `Record CI runtime` out of required checks.
-Nightly uses job-level `continue-on-error`, with matrix fail-fast disabled. A
-nightly failure remains visible in its failed step, warning, and summary; stable
-failures still fail the workflow. Image pulls happen inside each job so a broken
-nightly image does not block stable startup. Both channels also run daily at
-08:00 UTC. Stable tag discovery is a shared prerequisite; its failure is blocking.
+The matrix has fail-fast disabled and neither channel suppresses failures.
+Nightly failures produce a red optional check and a failed workflow, plus a
+warning and summary. Stable continues independently and can pass. Branch rules
+must require the named stable check, not every check or the entire workflow.
+This preserves GitHub's normal failed-run visibility and notifications for users
+subscribed to Actions failures; it does not automatically subscribe teammates.
+The PR author checks this optional result and brings regressions to the reviewer.
+There is no added daily schedule. Image pulls happen inside each login job so a
+broken nightly image cannot prevent stable startup. Stable tag discovery is a
+shared prerequisite; its failure is blocking.
 
 Cross-distro and native compatibility workflows remain additional regression
 signals. Their matrix names are moving values; they are not added as required
@@ -33,7 +38,17 @@ them with the minimum set above.
 `deny.toml` is the license allow-list. The pinned cargo-deny action checks all
 workspace features with the committed lockfile and includes dev-dependencies.
 Vulnerability advisories are errors by cargo-deny default; yanked crates are
-explicitly denied. No advisory exceptions are configured. A fresh RustSec
+explicitly denied. No advisory exceptions are configured.
+
+The license exception for `wolfssl-wolfcrypt =2.2.0` is deliberately exact. Its
+published manifest uses deprecated `GPL-3.0`; the source header grants version 3
+or later. A dependency bump using that identifier is expected to fail until the
+new published metadata and source headers are reviewed. Update the exception
+only after that review, or remove it if upstream adopts an already allowed SPDX
+identifier. Do not broaden it to all versions.
+
+The cargo-deny Rust version pin is managed alongside `rust-toolchain.toml` by
+Renovate and verified by `scripts/check-renovate-pins.py`. A fresh RustSec
 lookup failure also fails the gate. Informational unmaintained/unsound notices
 retain cargo-deny's defaults. Reproduce with:
 
@@ -68,9 +83,12 @@ first run. Queue time and source-event-to-run-start latency are excluded above.
 `CI runtime baseline` runs after each of these four workflows completes and logs
 per-job seconds, conclusion, source commit, run link, and attempt in its log and
 step summary. Its workflow elapsed value is measured from GitHub's run start
-through the last completed job, so it can include initial runner wait time.
-It paginates jobs and selects the exact attempt. It checks out no code and uses
-only read permissions, including when the source run is a fork PR. GitHub loads
+through the last measured job, so it can include initial runner wait time.
+It paginates jobs and selects the exact attempt. It skips cancelled runs and excludes cancelled/skipped jobs and jobs without
+both timestamps. Missing run start times produce an unavailable elapsed value.
+It uses read permissions and checks out only `github.workflow_sha`, the trusted
+default-branch revision defining the reporting workflow, never the triggering
+PR head. This also applies when the source run is a fork PR. GitHub loads
 `workflow_run` workflows from the default branch, so automatic timing reports
 start after this file is merged. Preserve run links when comparing future
 baselines and use the same timing definition.
@@ -84,10 +102,23 @@ baselines and use the same timing definition.
    advisory check fails, then revert. Do not commit an advisory ignore.
 4. In a disposable workflow branch, replace only the nightly image reference
    with a nonexistent tag. Stable must still run; nightly must warn and the
-   workflow must succeed if stable succeeds. Then inject a stable test failure
+   optional nightly check and workflow must fail while the required stable check
+   succeeds. Confirm branch rules do not require the nightly check. Then inject a stable test failure
    and verify the workflow fails. Restore both before merge.
 5. After merging, inspect the runtime workflow summary and record a post-change
    run link and required-check elapsed time here.
 
 The negative integration checks require GitHub Actions and are not implied by
 local syntax validation.
+
+## Reporter tests
+
+Run the committed offline fixtures with:
+
+```sh
+python3 -m unittest discover -s tests/ci -p 'test_*.py' -v
+```
+
+Core CI runs these tests before its Rust checks. Fixtures cover pagination and
+exact attempts, empty first/final pages, null job/run timestamps, cancelled runs
+and jobs, and pipe/newline characters in job names.
