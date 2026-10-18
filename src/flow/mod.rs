@@ -25,6 +25,7 @@
 pub mod classify;
 pub mod driver;
 pub(crate) mod fetch;
+pub(crate) mod form;
 
 use std::time::{Duration, Instant};
 
