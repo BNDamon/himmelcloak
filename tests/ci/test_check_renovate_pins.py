@@ -29,7 +29,7 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts/check-renovate-pins.py"
 FILES = [
     "renovate.json", "scripts/build-native.sh", "rust-toolchain.toml", "Cargo.toml", "tests/build/Dockerfile",
-    ".github/workflows/renovate-config.yml",
+    ".github/workflows/renovate-config.yml", ".github/workflows/ci.yml",
 ]
 
 
@@ -75,6 +75,14 @@ class CheckRenovatePinsTest(unittest.TestCase):
     def test_mismatched_rust_version_fails(self):
         self.edit("rust-toolchain.toml", 'channel = "1.', 'channel = "2.')
         self.assert_fails("mismatched versions")
+
+    def test_mismatched_cargo_deny_rust_version_fails(self):
+        self.edit(".github/workflows/ci.yml", "rust-version: '1.", "rust-version: '2.")
+        self.assert_fails("mismatched versions")
+
+    def test_missing_cargo_deny_rust_pin_fails(self):
+        self.edit(".github/workflows/ci.yml", "rust-version:", "unused-version:")
+        self.assert_fails("wrong pin counts")
 
     def test_dropped_dockerfile_rust_pin_fails(self):
         self.edit("tests/build/Dockerfile", "--toolchain 1.", "--toolchain stable-1.")
