@@ -35,6 +35,9 @@ use crate::flow::{driver, AuthFlow, DEFAULT_LOGIN_TIMEOUT};
 use crate::transport::CurlTransport;
 
 const PASSWORD: &str = "correct-horse-battery-staple";
+/// The test realm's client with direct grants disabled, so these scenarios prove the
+/// browser-free flow works without the password grant (charter section 2.7.3).
+const BROWSER_ONLY_CLIENT: &str = "himmelcloak-browser-only";
 
 fn trace(message: &str) {
     if std::env::var_os("HIMMELCLOAK_TEST_VERBOSE").is_some() {
@@ -45,7 +48,7 @@ fn trace(message: &str) {
 fn config() -> Config {
     let server = std::env::var("KEYCLOAK_URL").expect("KEYCLOAK_URL must be set for live tests");
     let ca = std::env::var("KEYCLOAK_CA").expect("KEYCLOAK_CA must be set for live tests");
-    let mut config = Config::new(&server, "himmelcloak-test", "himmelcloak-test-client").unwrap();
+    let mut config = Config::new(&server, "himmelcloak-test", BROWSER_ONLY_CLIENT).unwrap();
     config.ca_bundle = Some(PathBuf::from(ca));
     config
 }
@@ -73,6 +76,16 @@ async fn live_password_form_reaches_the_callback_and_a_wrong_password_is_rejecte
         .await
         .unwrap();
     let transport = CurlTransport::new(config.ca_bundle.clone(), config.timeout).unwrap();
+
+    // The password grant must really be off for this client, or the scenario proves nothing.
+    #[cfg(feature = "password")]
+    {
+        trace("confirm the password grant is refused for the browser-only client");
+        assert!(app
+            .acquire_token_by_password("alice", PASSWORD, None)
+            .await
+            .is_err());
+    }
 
     trace("submit alice's login form with the correct password");
     let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();

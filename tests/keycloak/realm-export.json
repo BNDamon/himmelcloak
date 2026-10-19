@@ -16,6 +16,17 @@
       "directAccessGrantsEnabled": true,
       "redirectUris": ["http://127.0.0.1:8845/himmelcloak/callback"],
       "webOrigins": ["http://127.0.0.1:8845"]
+    },
+    {
+      "clientId": "himmelcloak-browser-only",
+      "name": "Himmelcloak browser-flow tests without the password grant",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://127.0.0.1:8845/himmelcloak/callback"],
+      "webOrigins": ["http://127.0.0.1:8845"]
     }
   ],
   "users": [
