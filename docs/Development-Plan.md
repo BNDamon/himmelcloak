@@ -47,8 +47,11 @@ feature assignments, not fixed roles that all six people must work on at once.
 
 ## Required checks
 
-Every push and PR runs formatting, lint, unit tests, and a real HTTPS login
-suite against resolved Keycloak stable and `nightly` image digests. A separate
+Pushes to main and release branches, and every PR, run formatting, lint, unit
+tests, the supply-chain license/advisory gate, and a real HTTPS login suite
+against resolved Keycloak stable and `nightly` image digests. Stable login is
+required; nightly failures remain visible in an optional check and do not cancel
+stable. See [CI gates and runtime baseline](CI.md) for exact required check names. A separate
 matrix resolves current stable and development refs for wolfSSL and curl. The
 standard native test image uses the pinned wolfSSL stable release. A new auth
 feature is only complete when the stock Keycloak oracle demonstrates its

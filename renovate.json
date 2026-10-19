@@ -45,12 +45,14 @@
       "customType": "regex",
       "description": "Rust toolchain pins",
       "managerFilePatterns": [
+        "/^\\.github/workflows/ci\\.yml$/",
         "/^rust-toolchain\\.toml$/",
         "/^Cargo\\.toml$/",
         "/^tests/build/Dockerfile$/",
         "/^\\.github/docker/himmelcloak-ci/Dockerfile\\.[a-z]+$/"
       ],
       "matchStrings": [
+        "rust-version: '(?<currentValue>\\d+\\.\\d+\\.\\d+)'",
         "channel = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
         "rust-version = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
         "FROM rust:(?<currentValue>\\d+\\.\\d+\\.\\d+)-bookworm",

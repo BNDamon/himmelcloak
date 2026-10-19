@@ -1,0 +1,27 @@
+name: CI runtime baseline
+on:
+  workflow_run:
+    workflows: ['Core build and unit tests', 'Keycloak login tests', 'Cross-distro build and tests', 'wolfSSL and curl compatibility']
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  runtime:
+    name: Record CI runtime
+    if: ${{ github.event.workflow_run.conclusion != 'cancelled' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Use the trusted revision of this workflow from the default branch,
+      # never the triggering PR's head or an artifact supplied by that PR.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Log workflow and job durations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci/runtime_report.py

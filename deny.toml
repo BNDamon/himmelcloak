@@ -1,5 +1,6 @@
 # cargo-deny config. License allow-list plus advisory checks.
 [licenses]
+include-dev = true
 allow = [
   "LGPL-3.0-or-later",
   "GPL-3.0-or-later",
@@ -10,5 +11,17 @@ allow = [
   "Unicode-3.0",
 ]
 
+# The published 2.2.0 manifest uses the deprecated GPL-3.0 identifier.
+# Its src/lib.rs header grants GPL version 3 or later. Match this existing
+# dependency's exact metadata without allowing GPL-3.0 for other crates.
+# The exact version is intentional: a dependency bump must re-review the
+# published license metadata and source headers before updating this exception.
+# A GPL-3.0 rejection after a bump is expected; see docs/CI.md.
+[[licenses.exceptions]]
+name = "wolfssl-wolfcrypt"
+version = "=2.2.0"
+allow = ["GPL-3.0"]
+
 [advisories]
-# Use cargo-deny defaults (deny known-vulnerable crates).
+# Vulnerabilities are errors by default. No advisory IDs are ignored.
+yanked = "deny"

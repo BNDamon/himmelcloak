@@ -28,6 +28,17 @@ jobs:
       KEYCLOAK_IMAGE: ${{ matrix.keycloak-image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Resolve server image digest
+        run: |
+          docker pull "$KEYCLOAK_IMAGE"
+          digest=$(docker image inspect "$KEYCLOAK_IMAGE" --format '{{index .RepoDigests 0}}')
+          test -n "$digest"
+          echo "KEYCLOAK_IMAGE=$digest" >> "$GITHUB_ENV"
+          echo "Keycloak image: $digest" >> "$GITHUB_STEP_SUMMARY"
+      - name: Record nightly source reference
+        if: matrix.experimental
+        run: |
+          git ls-remote --heads https://github.com/keycloak/keycloak.git main
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -41,11 +52,6 @@ jobs:
         run: tests/keycloak/bootstrap-cert.sh
       - name: Start stock Keycloak
         run: docker compose -f tests/keycloak/docker-compose.yml up -d keycloak
-      - name: Record server image
-        run: |
-          echo "Keycloak image channel: ${{ matrix.keycloak-ref }}"
-          echo "Keycloak main HEAD at resolution: ${{ matrix.keycloak-main-head }}"
-          docker image inspect "$KEYCLOAK_IMAGE" --format '{{index .RepoDigests 0}}'
       - name: Run live login suite
         run: |
           docker compose -f tests/keycloak/docker-compose.yml run --rm \
@@ -62,3 +68,9 @@ jobs:
       - name: Stop Keycloak
         if: always()
         run: docker compose -f tests/keycloak/docker-compose.yml down -v
+      - name: Report nightly failure
+        if: ${{ failure() && matrix.experimental }}
+        run: |
+          echo '::warning::Keycloak nightly failed; inspect this job and its server logs. Stable login remains required.'
+          echo '### Keycloak nightly failed (optional check)' >> "$GITHUB_STEP_SUMMARY"
+          echo 'This job and workflow remain failed for visibility. Stable login runs independently; require only its check for merging.' >> "$GITHUB_STEP_SUMMARY"

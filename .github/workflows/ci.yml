@@ -13,12 +13,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  cargo-deny:
+    name: Supply-chain licenses and advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+        with:
+          rust-version: '1.95.0'
+          arguments: --locked --all-features
+          command: check
+          command-arguments: licenses advisories
+
   quality:
     name: Rust format, Clippy, unit tests
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: CI script tests
+        run: python3 -m unittest discover -s tests/ci -p 'test_*.py' -v
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
