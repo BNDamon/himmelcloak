@@ -28,6 +28,7 @@ use std::path::PathBuf;
 
 use crate::client::{PublicClientApplication, Start};
 use crate::config::Config;
+use crate::error::Error;
 use crate::flow::classify::PageKind;
 use crate::flow::fetch::{self, Fetched};
 use crate::flow::form::{extract, Form};
@@ -124,4 +125,55 @@ async fn live_password_form_reaches_the_callback_and_a_wrong_password_is_rejecte
     let (kind, _) = extract(&page).unwrap();
     assert!(matches!(kind, PageKind::UsernamePassword));
     trace("Keycloak rejected the wrong password and showed the login page again");
+}
+
+#[tokio::test]
+#[ignore = "requires a live Keycloak server and test CA"]
+async fn live_code_exchange_returns_verified_tokens_and_a_wrong_code_is_rejected() {
+    let config = config();
+    let app = PublicClientApplication::with_config(config.clone())
+        .await
+        .unwrap();
+    let transport = CurlTransport::new(config.ca_bundle.clone(), config.timeout).unwrap();
+
+    trace("log alice in and exchange the callback's code");
+    let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+    let form = login_form(&app, &transport, &mut flow).await;
+    let fetched = form
+        .submit(
+            &transport,
+            &mut flow.jar,
+            &[("username", "alice"), ("password", PASSWORD)],
+        )
+        .await
+        .unwrap();
+    let Fetched::Redirect(redirect) = fetched else {
+        panic!("a correct password must redirect to the callback");
+    };
+    let callback = driver::callback(&redirect, &config.redirect_uri, &mut flow)
+        .unwrap()
+        .expect("the registered callback");
+    let tokens = app.exchange_code(callback, &mut flow).await.unwrap();
+    assert!(tokens.id_token.is_some());
+    assert!(tokens
+        .verified_subject
+        .as_deref()
+        .is_some_and(|subject| !subject.is_empty()));
+    assert_eq!(
+        tokens.verified_issuer.as_deref(),
+        Some(config.issuer().unwrap().as_str())
+    );
+    assert!(!flow.is_active());
+    trace("Keycloak issued tokens that passed the ID token checks");
+
+    trace("exchange a code Keycloak never issued");
+    let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+    let wrong = driver::Callback {
+        code: "not-a-code-keycloak-issued".to_owned(),
+    };
+    assert_eq!(
+        app.exchange_code(wrong, &mut flow).await.err(),
+        Some(Error::AuthenticationRejected)
+    );
+    trace("Keycloak rejected the wrong code");
 }
