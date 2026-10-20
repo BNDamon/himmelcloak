@@ -18,6 +18,7 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
+use std::future::Future;
 use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
@@ -248,6 +249,48 @@ impl PublicClientApplication {
         )
     }
 
+    /// Exchange the callback's code for tokens that pass the ID token checks, ending the login.
+    /// A failed or abandoned exchange also ends it: the code is single-use.
+    pub(crate) fn exchange_code<'a>(
+        &'a self,
+        callback: driver::Callback,
+        flow: &'a mut AuthFlow,
+    ) -> impl Future<Output = Result<Tokens>> + 'a {
+        // Not an async fn: the guard must exist before the first poll, or an unpolled drop leaks it.
+        let login = EndLogin(flow);
+        async move {
+            login.0.ensure_active()?;
+            let tokens = self
+                .redeem_code(&callback.code, login.0.pkce_verifier(), login.0.nonce())
+                .await?;
+            login.0.finish()?;
+            Ok(tokens)
+        }
+    }
+
+    /// Authorization-code grant for a public client (RFC 6749 section 4.1.3, RFC 7636 section 4.5).
+    async fn redeem_code(&self, code: &str, verifier: &str, nonce: &str) -> Result<Tokens> {
+        let mut tokens = standard::acquire(
+            self.transport.as_ref(),
+            self.metadata.token_endpoint.clone(),
+            &[
+                ("grant_type", "authorization_code"),
+                ("client_id", self.config.client_id.as_str()),
+                ("code", code),
+                ("redirect_uri", self.config.redirect_uri.as_str()),
+                ("code_verifier", verifier),
+            ],
+            true,
+        )
+        .await?;
+        let claims = self.verify_tokens(&tokens, Some(nonce)).await?;
+        tokens.verified_subject = claims.get("sub").and_then(Value::as_str).map(str::to_owned);
+        tokens.verified_issuer = Some(self.metadata.issuer.clone());
+        tokens.verified_client_id = Some(self.config.client_id.clone());
+        tokens.verified_refresh_token = tokens.refresh_token.clone();
+        Ok(tokens)
+    }
+
     pub async fn initiate_auth_flow(&self, _start: Start) -> Result<(AuthFlow, AuthStep)> {
         Err(Error::NotImplemented)
     }
@@ -266,6 +309,16 @@ impl PublicClientApplication {
 pub struct Start {
     pub login_hint: Option<String>,
     pub scopes: Vec<String>,
+}
+
+/// Ends the login when dropped, including when the caller drops an exchange mid-request.
+struct EndLogin<'a>(&'a mut AuthFlow);
+
+impl Drop for EndLogin<'_> {
+    fn drop(&mut self) {
+        // A finished login stays finished: cancel only changes an active flow.
+        self.0.cancel();
+    }
 }
 
 #[cfg(test)]
