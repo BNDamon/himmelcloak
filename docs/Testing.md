@@ -20,7 +20,9 @@ The suite runs `cargo test --lib --test live_keycloak -- --ignored`, so it also
 runs the library's live scenarios in `src/flow/live.rs`. Those cover flow pieces
 the public API cannot reach until `initiate_auth_flow` drives a whole login, such
 as submitting the login form: a correct password reaches the registered callback
-with a code, and a wrong one returns the login page. They log in through the
+with a code, and a wrong one returns the login page. The code exchange scenario
+redeems that code for tokens that pass the ID token checks, and a code Keycloak
+never issued is rejected. They log in through the
 realm's `himmelcloak-browser-only` client, which has direct grants disabled, and
 first confirm the password grant is refused for it, so they prove the browser-free
 flow works without the password grant.

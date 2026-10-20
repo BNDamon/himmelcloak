@@ -9,6 +9,7 @@
 | `CONTRIBUTING.md` | Contributor setup and pull request guidelines |
 | `src/` | Keycloak client and public API |
 | `src/lib.rs` | Rust library entry point and public exports |
+| `src/client.rs` | `PublicClientApplication`: grants, code exchange, refresh, revocation, and userinfo |
 | `src/transport.rs` | HTTP boundary and wolfSSL-backed libcurl client |
 | `src/crypto.rs` | wolfCrypt hashing, randomness, and signature verification |
 | `src/token.rs` | OIDC metadata, JWKS, and ID-token checks |
