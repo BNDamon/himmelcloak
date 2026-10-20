@@ -286,7 +286,7 @@ impl fmt::Debug for Redacted<'_> {
 }
 
 /// Overwrite a URL's bytes before it is freed.
-fn scrub_url(url: &mut Url) {
+pub(crate) fn scrub_url(url: &mut Url) {
     if let Ok(blank) = Url::parse("data:,") {
         let mut text: String = std::mem::replace(url, blank).into();
         text.zeroize();
@@ -372,12 +372,22 @@ mod tests {
 
     use url::Url;
 
-    use super::{get, post_form, CookieJar, Fetched, Page, Redirect, RedirectKind};
+    use super::{get, post_form, scrub_url, CookieJar, Fetched, Page, Redirect, RedirectKind};
     use crate::error::{Error, Result};
     use crate::flow::{AuthFlow, DEFAULT_LOGIN_TIMEOUT};
     use crate::transport::{CurlTransport, HttpTransport, Request, Response};
 
     const KC: &str = "https://keycloak.test:8443";
+
+    #[test]
+    fn scrubbed_urls_keep_no_session_values() {
+        let mut url = Url::parse(&format!(
+            "{KC}/realms/r/login-actions/authenticate?session_code=FIXTURE"
+        ))
+        .unwrap();
+        scrub_url(&mut url);
+        assert_eq!(url.as_str(), "data:,");
+    }
 
     /// One scripted server reply.
     struct Reply {

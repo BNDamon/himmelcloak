@@ -108,16 +108,34 @@ fn action_url(page: &Url, action: Option<&str>) -> Result<Url> {
     let action = action
         .filter(|action| !action.is_empty())
         .ok_or(Error::Protocol("login form without action"))?;
-    let action = page
+    let mut action = page
         .join(action)
         .map_err(|_| Error::Protocol("invalid login form action"))?;
+    // A refused action still carries the page's session values; wipe it before it is freed.
+    if let Err(error) = check_action(page, &action) {
+        fetch::scrub_url(&mut action);
+        return Err(error);
+    }
+    Ok(action)
+}
+
+fn check_action(page: &Url, action: &Url) -> Result<()> {
     if action.scheme() != "https" || action.origin() != page.origin() {
         return Err(Error::Protocol("login form posts to another site"));
     }
     if !action.path().ends_with(ACTION_PATH_SUFFIX) {
         return Err(Error::Protocol("login form does not post to login-actions"));
     }
-    let pairs: Vec<(String, String)> = action.query_pairs().into_owned().collect();
+    // The decoded values include the session code; `Zeroizing` wipes them on every return.
+    let pairs: Vec<(Zeroizing<String>, Zeroizing<String>)> = action
+        .query_pairs()
+        .map(|(name, value)| {
+            (
+                Zeroizing::new(name.into_owned()),
+                Zeroizing::new(value.into_owned()),
+            )
+        })
+        .collect();
     for (i, (name, _)) in pairs.iter().enumerate() {
         if pairs[..i].iter().any(|(earlier, _)| earlier == name) {
             return Err(Error::Protocol("repeated login form action parameter"));
@@ -126,12 +144,12 @@ fn action_url(page: &Url, action: Option<&str>) -> Result<Url> {
     for required in ACTION_QUERY {
         if !pairs
             .iter()
-            .any(|(name, value)| name == required && !value.is_empty())
+            .any(|(name, value)| name.as_str() == *required && !value.is_empty())
         {
             return Err(Error::Protocol("login form action missing session values"));
         }
     }
-    Ok(action)
+    Ok(())
 }
 
 impl Form {
@@ -167,6 +185,13 @@ impl Form {
             })
             .collect();
         fetch::post_form(transport, jar, self.action.clone(), &values).await
+    }
+}
+
+impl Drop for Form {
+    fn drop(&mut self) {
+        // The action's query carries the session code.
+        fetch::scrub_url(&mut self.action);
     }
 }
 

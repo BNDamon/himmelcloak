@@ -33,6 +33,7 @@
 //! named field in its single form is on that page's allow-list; anything else is `Unknown`, and
 //! the flow denies it rather than guess.
 use html5gum::{DefaultEmitter, HtmlString, StartTag, Token, Tokenizer};
+use zeroize::Zeroize;
 
 use crate::flow::OtpDevice;
 
@@ -60,8 +61,8 @@ pub(crate) enum PageKind {
 
 /// Classify a fetched page body. Never fails: anything unrecognised is `Unknown`.
 ///
-/// The tokenizer copies attribute values, including the form action's `session_code`, without
-/// zeroizing them; those copies live only until this call returns.
+/// The tokenizer's own copies of attribute values, including the form action's `session_code`,
+/// are not zeroized; they live only until this call returns. The scan's copies are wiped.
 pub(crate) fn classify(body: &[u8]) -> PageKind {
     let Ok(html) = std::str::from_utf8(body) else {
         return PageKind::Unknown;
@@ -119,6 +120,16 @@ pub(super) struct Scan {
     /// A structure a real Keycloak page never has: nested forms, or controls that submit
     /// outside their form.
     suspicious: bool,
+}
+
+impl Drop for Scan {
+    fn drop(&mut self) {
+        // The action carries the session code; field values can be prefilled from the page.
+        self.action.zeroize();
+        for control in &mut self.controls {
+            control.value.zeroize();
+        }
+    }
 }
 
 impl Scan {
