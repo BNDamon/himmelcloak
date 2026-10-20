@@ -61,6 +61,15 @@ loopback HTTP by default) by exact scheme, host, port, and path, checks that its
 `state` matches the login's before trusting it, takes its `code`, and stops
 without requesting it. A redirect URI with a query or fragment is refused.
 
+Form submission (`src/flow/form.rs`) posts a recognised page's form back to
+Keycloak. The form must use POST and post over HTTPS to the page's own site at
+`login-actions/authenticate`, with exactly one non-empty `session_code`,
+`execution`, `client_id`, and `tab_id` copied from the page. Only the fields
+charter Table 2 lists are posted (`username`, `password`, `credentialId` on the
+login page; `otp`, `selectedCredentialId` on the code page), starting from the
+page's own values. An answer for a field the page lacks, a repeated answer, or a
+device the page did not offer is refused before anything is sent.
+
 For WebAuthn, the intended adapter builds client data for Keycloak's actual
 origin and sends the signing request to a caller-provided authenticator. The
 flow must preserve WebAuthn origin checks and use an explicit adapter contract

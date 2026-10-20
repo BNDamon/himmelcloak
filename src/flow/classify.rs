@@ -33,6 +33,7 @@
 //! named field in its single form is on that page's allow-list; anything else is `Unknown`, and
 //! the flow denies it rather than guess.
 use html5gum::{DefaultEmitter, HtmlString, StartTag, Token, Tokenizer};
+use zeroize::Zeroize;
 
 use crate::flow::OtpDevice;
 
@@ -60,8 +61,8 @@ pub(crate) enum PageKind {
 
 /// Classify a fetched page body. Never fails: anything unrecognised is `Unknown`.
 ///
-/// The tokenizer copies attribute values, including the form action's `session_code`, without
-/// zeroizing them; those copies live only until this call returns.
+/// The tokenizer's own copies of attribute values, including the form action's `session_code`,
+/// are not zeroized; they live only until this call returns. The scan's copies are wiped.
 pub(crate) fn classify(body: &[u8]) -> PageKind {
     let Ok(html) = std::str::from_utf8(body) else {
         return PageKind::Unknown;
@@ -70,10 +71,12 @@ pub(crate) fn classify(body: &[u8]) -> PageKind {
 }
 
 /// A named form control a browser would submit.
-struct Control {
-    name: String,
-    kind: String,
-    value: String,
+pub(super) struct Control {
+    pub(super) name: String,
+    pub(super) kind: String,
+    pub(super) value: String,
+    /// Whether a radio or checkbox starts selected; a browser submits only those.
+    pub(super) checked: bool,
 }
 
 /// An element whose ID is `kc-otp-credential-N`.
@@ -98,11 +101,16 @@ struct Capture {
     text: String,
 }
 
+/// One tokenizer pass over a page. The form extractor (`form.rs`) reads the same scan, so a form
+/// is only ever submitted from a page this module recognised.
 #[derive(Default)]
-struct Scan {
+pub(super) struct Scan {
     forms: usize,
     in_form: bool,
-    controls: Vec<Control>,
+    /// The form's `action` and `method` attributes, as written on the page.
+    pub(super) action: Option<String>,
+    pub(super) method: Option<String>,
+    pub(super) controls: Vec<Control>,
     labels: Vec<(String, String)>,
     tiles: Vec<Tile>,
     capture: Option<Capture>,
@@ -114,8 +122,18 @@ struct Scan {
     suspicious: bool,
 }
 
+impl Drop for Scan {
+    fn drop(&mut self) {
+        // The action carries the session code; field values can be prefilled from the page.
+        self.action.zeroize();
+        for control in &mut self.controls {
+            control.value.zeroize();
+        }
+    }
+}
+
 impl Scan {
-    fn run(html: &str) -> Self {
+    pub(super) fn run(html: &str) -> Self {
         let mut emitter = DefaultEmitter::default();
         // Treat <script>, <style>, and similar contents as text, as a browser does, so markup
         // inside JavaScript is never mistaken for a form field.
@@ -155,6 +173,8 @@ impl Scan {
             b"form" => {
                 self.in_form = true;
                 self.forms += 1;
+                self.action = attribute(tag, "action");
+                self.method = attribute(tag, "method");
             }
             b"input" | b"select" | b"textarea" | b"button" => self.control(tag),
             b"label" => {
@@ -208,6 +228,7 @@ impl Scan {
                 .map(|kind| kind.to_ascii_lowercase())
                 .unwrap_or_else(|| default_kind.to_owned()),
             value: attribute(tag, "value").unwrap_or_default(),
+            checked: attribute(tag, "checked").is_some(),
         });
     }
 
@@ -248,7 +269,7 @@ impl Scan {
         }
     }
 
-    fn kind(&self) -> Option<PageKind> {
+    pub(super) fn kind(&self) -> Option<PageKind> {
         // Every Keycloak login page has exactly one form; a second one, even empty, is not a
         // page we know.
         if self.suspicious || self.forms != 1 {
