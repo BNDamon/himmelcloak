@@ -323,18 +323,19 @@ impl Drop for EndLogin<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::collections::{HashMap, VecDeque};
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::{Arc, Mutex, RwLock};
     use std::time::Duration;
 
     use serde_json::{json, Value};
-    use url::Url;
+    use url::{form_urlencoded, Url};
 
     use super::{PublicClientApplication, Start};
     use crate::config::Config;
     use crate::error::{Error, Result};
+    use crate::flow::driver::Callback;
     use crate::flow::Tokens;
     use crate::flow::{Answer, AuthFlow, DEFAULT_LOGIN_TIMEOUT};
     use crate::token::Metadata;
@@ -362,6 +363,13 @@ mod tests {
     }
 
     fn app(jwks: Value, responses: Vec<Response>) -> PublicClientApplication {
+        app_with(
+            jwks,
+            Arc::new(RecordedTransport(Mutex::new(responses.into()))),
+        )
+    }
+
+    fn app_with(jwks: Value, transport: Arc<dyn HttpTransport>) -> PublicClientApplication {
         let config = Config::new("https://example.test", "test", "client").unwrap();
         let url = |path: &str| Url::parse(&format!("https://example.test/{path}")).unwrap();
         PublicClientApplication {
@@ -374,8 +382,342 @@ mod tests {
                 userinfo_endpoint: url("userinfo"),
                 revocation_endpoint: url("revoke"),
             },
-            transport: Arc::new(RecordedTransport(Mutex::new(responses.into()))),
+            transport,
             jwks: RwLock::new(jwks),
+        }
+    }
+
+    /// Answers from a script and records each request's URL and form body.
+    struct TokenEndpoint {
+        replies: Mutex<VecDeque<Result<Response>>>,
+        sent: Mutex<Vec<(String, String)>>,
+    }
+
+    impl HttpTransport for TokenEndpoint {
+        fn send(
+            &self,
+            request: Request,
+        ) -> Pin<Box<dyn Future<Output = Result<Response>> + Send + '_>> {
+            let body = String::from_utf8(request.body.clone()).unwrap();
+            self.sent
+                .lock()
+                .unwrap()
+                .push((request.url.to_string(), body));
+            let reply = self.replies.lock().unwrap().pop_front().unwrap();
+            Box::pin(async move { reply })
+        }
+    }
+
+    /// Never answers, like a token endpoint that hangs.
+    struct Stalled;
+
+    impl HttpTransport for Stalled {
+        fn send(
+            &self,
+            _request: Request,
+        ) -> Pin<Box<dyn Future<Output = Result<Response>> + Send + '_>> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    fn token_app(
+        jwks: Value,
+        replies: Vec<Result<Response>>,
+    ) -> (PublicClientApplication, Arc<TokenEndpoint>) {
+        let endpoint = Arc::new(TokenEndpoint {
+            replies: Mutex::new(replies.into()),
+            sent: Mutex::new(Vec::new()),
+        });
+        (app_with(jwks, endpoint.clone()), endpoint)
+    }
+
+    fn reply(status: u32, body: &str) -> Result<Response> {
+        Ok(Response {
+            status,
+            headers: Vec::new(),
+            body: body.as_bytes().to_vec(),
+            cookies: Vec::new(),
+        })
+    }
+
+    const FIXTURE_NONCE: &str = "fixture-login-nonce";
+
+    fn nonce_fixture() -> Value {
+        serde_json::from_str(include_str!("../tests/fixtures/rs256_id_token_nonce.json")).unwrap()
+    }
+
+    fn token_response(id_token: &Value) -> String {
+        json!({
+            "access_token": "access",
+            "refresh_token": "refresh",
+            "id_token": id_token,
+            "token_type": "Bearer"
+        })
+        .to_string()
+    }
+
+    fn callback() -> Callback {
+        Callback {
+            code: "synthetic-code".to_owned(),
+        }
+    }
+
+    fn sent_fields(endpoint: &TokenEndpoint) -> Vec<(String, String)> {
+        let sent = endpoint.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, "https://example.test/token");
+        form_urlencoded::parse(sent[0].1.as_bytes())
+            .into_owned()
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn code_exchange_posts_the_pkce_grant_and_binds_the_session() {
+        let fixture = nonce_fixture();
+        let (client, endpoint) = token_app(
+            fixture["jwk"].clone(),
+            vec![reply(200, &token_response(&fixture["token"]))],
+        );
+        let tokens = client
+            .redeem_code("synthetic-code", "synthetic-verifier", FIXTURE_NONCE)
+            .await
+            .unwrap();
+        assert_eq!(tokens.access_token, "access");
+        assert_eq!(tokens.verified_subject.as_deref(), Some("alice"));
+        assert_eq!(
+            tokens.verified_issuer.as_deref(),
+            Some("https://example.test/realms/test")
+        );
+        assert_eq!(tokens.verified_client_id.as_deref(), Some("client"));
+        assert_eq!(tokens.verified_refresh_token.as_deref(), Some("refresh"));
+        let expected = [
+            ("grant_type", "authorization_code"),
+            ("client_id", "client"),
+            ("code", "synthetic-code"),
+            ("redirect_uri", "http://127.0.0.1:8845/himmelcloak/callback"),
+            ("code_verifier", "synthetic-verifier"),
+        ]
+        .map(|(name, value)| (name.to_owned(), value.to_owned()));
+        assert_eq!(sent_fields(&endpoint), expected);
+    }
+
+    #[tokio::test]
+    async fn code_exchange_maps_token_endpoint_rejections() {
+        let grant_setting =
+            Error::InvalidConfiguration("Keycloak rejected the client or requested grant");
+        let cases = [
+            (
+                reply(
+                    400,
+                    r#"{"error":"invalid_grant","error_description":"Code not valid"}"#,
+                ),
+                Error::AuthenticationRejected,
+            ),
+            (
+                reply(400, r#"{"error":"invalid_client"}"#),
+                grant_setting.clone(),
+            ),
+            (
+                reply(400, r#"{"error":"unauthorized_client"}"#),
+                grant_setting.clone(),
+            ),
+            (
+                reply(400, r#"{"error":"unsupported_grant_type"}"#),
+                grant_setting.clone(),
+            ),
+            (reply(400, r#"{"error":"invalid_request"}"#), grant_setting),
+            (
+                reply(400, r#"{"error":"server_error"}"#),
+                Error::HttpStatus(400),
+            ),
+            (reply(401, "{}"), Error::AuthenticationRejected),
+            (reply(500, ""), Error::HttpStatus(500)),
+            (
+                Err(Error::Transport("connection reset".to_owned())),
+                Error::Transport("connection reset".to_owned()),
+            ),
+        ];
+        for (answer, expected) in cases {
+            let (client, _) = token_app(json!({}), vec![answer]);
+            let want = Some(expected);
+            assert_eq!(
+                client
+                    .redeem_code("wrong-code", "verifier", FIXTURE_NONCE)
+                    .await
+                    .err(),
+                want,
+                "{want:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn code_exchange_rejects_malformed_token_responses() {
+        let fixture = nonce_fixture();
+        let id_token = fixture["token"].as_str().unwrap();
+        let invalid = Error::Protocol("invalid token response");
+        let wrong_type = Error::Protocol("unexpected token type");
+        let cases = [
+            ("not json".to_owned(), invalid.clone()),
+            (
+                json!({"token_type":"Bearer","id_token":id_token}).to_string(),
+                invalid.clone(),
+            ),
+            (
+                json!({"access_token":"access","id_token":id_token}).to_string(),
+                invalid.clone(),
+            ),
+            (
+                json!({"access_token":"access","token_type":"Bearer","id_token":7}).to_string(),
+                invalid,
+            ),
+            (
+                json!({"access_token":"access","token_type":"MAC","id_token":id_token}).to_string(),
+                wrong_type.clone(),
+            ),
+            (
+                json!({"access_token":"","token_type":"Bearer","id_token":id_token}).to_string(),
+                wrong_type,
+            ),
+            (
+                json!({"access_token":"access","token_type":"Bearer"}).to_string(),
+                Error::Protocol("token response has no ID token"),
+            ),
+        ];
+        for (body, expected) in cases {
+            let (client, _) = token_app(fixture["jwk"].clone(), vec![reply(200, &body)]);
+            assert_eq!(
+                client
+                    .redeem_code("code", "verifier", FIXTURE_NONCE)
+                    .await
+                    .err(),
+                Some(expected),
+                "{body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn code_exchange_requires_the_nonce_this_login_sent() {
+        let bound = nonce_fixture();
+        let unbound: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/rs256_id_token.json")).unwrap();
+        for (fixture, nonce) in [(&bound, "another-login-nonce"), (&unbound, FIXTURE_NONCE)] {
+            let (client, _) = token_app(
+                fixture["jwk"].clone(),
+                vec![reply(200, &token_response(&fixture["token"]))],
+            );
+            assert_eq!(
+                client.redeem_code("code", "verifier", nonce).await.err(),
+                Some(Error::TokenValidation("nonce mismatch"))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn code_exchange_applies_the_id_token_checks() {
+        let fixture = nonce_fixture();
+        let (mut other_client, _) = token_app(
+            fixture["jwk"].clone(),
+            vec![reply(200, &token_response(&fixture["token"]))],
+        );
+        other_client.config.client_id = "another-client".to_owned();
+        assert_eq!(
+            other_client
+                .redeem_code("code", "verifier", FIXTURE_NONCE)
+                .await
+                .err(),
+            Some(Error::TokenValidation("audience mismatch"))
+        );
+
+        let mut tampered = fixture["token"].as_str().unwrap().as_bytes().to_vec();
+        let signature_start = tampered.iter().rposition(|byte| *byte == b'.').unwrap() + 1;
+        tampered[signature_start] = if tampered[signature_start] == b'A' {
+            b'B'
+        } else {
+            b'A'
+        };
+        let tampered = String::from_utf8(tampered).unwrap();
+        let (client, _) = token_app(
+            fixture["jwk"].clone(),
+            vec![reply(200, &token_response(&json!(tampered)))],
+        );
+        assert_eq!(
+            client
+                .redeem_code("code", "verifier", FIXTURE_NONCE)
+                .await
+                .err(),
+            Some(Error::TokenValidation("invalid signature"))
+        );
+    }
+
+    #[tokio::test]
+    async fn code_exchange_sends_nothing_for_an_ended_login() {
+        let mut cancelled = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+        cancelled.cancel();
+        let mut expired = AuthFlow::new(Duration::ZERO).unwrap();
+        let mut finished = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+        finished.finish().unwrap();
+        for (flow, expected) in [
+            (&mut cancelled, Error::Cancelled),
+            (&mut expired, Error::Expired),
+            (
+                &mut finished,
+                Error::Protocol("login flow already finished"),
+            ),
+        ] {
+            let (client, endpoint) = token_app(json!({}), vec![]);
+            assert_eq!(
+                client.exchange_code(callback(), flow).await.err(),
+                Some(expected)
+            );
+            assert!(endpoint.sent.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn an_abandoned_code_exchange_ends_the_login() {
+        let client = app_with(json!({}), Arc::new(Stalled));
+        let mut never_polled = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+        drop(client.exchange_code(callback(), &mut never_polled));
+        let mut timed_out = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+        let exchange = client.exchange_code(callback(), &mut timed_out);
+        assert!(tokio::time::timeout(Duration::from_millis(10), exchange)
+            .await
+            .is_err());
+        for flow in [&mut never_polled, &mut timed_out] {
+            assert_eq!(flow.ensure_active().err(), Some(Error::Cancelled));
+            assert!(flow.pkce_verifier().is_empty() && flow.nonce().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn code_exchange_sends_the_login_verifier_and_ends_a_failed_login() {
+        let fixture = nonce_fixture();
+        let cases = [
+            (
+                reply(400, r#"{"error":"invalid_grant"}"#),
+                Error::AuthenticationRejected,
+            ),
+            // Signed and nonce-bound, but not to this login's random nonce.
+            (
+                reply(200, &token_response(&fixture["token"])),
+                Error::TokenValidation("nonce mismatch"),
+            ),
+        ];
+        for (answer, expected) in cases {
+            let (client, endpoint) = token_app(fixture["jwk"].clone(), vec![answer]);
+            let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+            let verifier = flow.pkce_verifier().to_owned();
+            assert_eq!(
+                client.exchange_code(callback(), &mut flow).await.err(),
+                Some(expected)
+            );
+            let fields: HashMap<_, _> = sent_fields(&endpoint).into_iter().collect();
+            assert_eq!(fields["code"], "synthetic-code");
+            assert_eq!(fields["code_verifier"], verifier);
+            assert_eq!(flow.ensure_active().err(), Some(Error::Cancelled));
+            assert!(flow.pkce_verifier().is_empty() && flow.nonce().is_empty());
         }
     }
 
