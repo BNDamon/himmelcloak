@@ -192,6 +192,14 @@ impl AuthFlow {
         })
     }
 
+    /// A login whose nonce matches a signed test fixture; real logins always use `new`.
+    #[cfg(test)]
+    pub(crate) fn with_nonce(time_limit: Duration, nonce: &str) -> Result<Self> {
+        let mut flow = Self::new(time_limit)?;
+        flow.nonce = Zeroizing::new(nonce.to_owned());
+        Ok(flow)
+    }
+
     /// Abandon the login and wipe its session cookies. Later answers are rejected.
     pub fn cancel(&mut self) {
         self.expire_if_due();

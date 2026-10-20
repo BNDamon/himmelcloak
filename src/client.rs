@@ -632,11 +632,7 @@ mod tests {
 
         let mut tampered = fixture["token"].as_str().unwrap().as_bytes().to_vec();
         let signature_start = tampered.iter().rposition(|byte| *byte == b'.').unwrap() + 1;
-        tampered[signature_start] = if tampered[signature_start] == b'A' {
-            b'B'
-        } else {
-            b'A'
-        };
+        tampered[signature_start] = b"BA"[usize::from(tampered[signature_start] != b'A')];
         let tampered = String::from_utf8(tampered).unwrap();
         let (client, _) = token_app(
             fixture["jwk"].clone(),
@@ -673,6 +669,26 @@ mod tests {
             );
             assert!(endpoint.sent.lock().unwrap().is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn code_exchange_finishes_the_login_with_verified_tokens() {
+        let fixture = nonce_fixture();
+        let (client, endpoint) = token_app(
+            fixture["jwk"].clone(),
+            vec![reply(200, &token_response(&fixture["token"]))],
+        );
+        let mut flow = AuthFlow::with_nonce(DEFAULT_LOGIN_TIMEOUT, FIXTURE_NONCE).unwrap();
+        let verifier = flow.pkce_verifier().to_owned();
+        let tokens = client.exchange_code(callback(), &mut flow).await.unwrap();
+        assert_eq!(tokens.verified_subject.as_deref(), Some("alice"));
+        let fields: HashMap<_, _> = sent_fields(&endpoint).into_iter().collect();
+        assert_eq!(fields["code_verifier"], verifier);
+        assert_eq!(
+            flow.ensure_active().err(),
+            Some(Error::Protocol("login flow already finished"))
+        );
+        assert!(flow.pkce_verifier().is_empty() && flow.nonce().is_empty());
     }
 
     #[tokio::test]
