@@ -28,9 +28,9 @@ Authorization-request construction is in place. Each login generates a
 wolfCrypt-backed PKCE verifier and S256 challenge plus independent state and
 nonce values. The flow retains those secrets, validates the returned state,
 and wipes them when it ends. The remaining driver work will fetch and classify
-the returned challenge, accept a typed answer, and exchange the final code for
-tokens. The caller owns the user conversation; the library owns protocol state
-and response validation.
+the returned challenge, accept a typed answer, and hand the final code to the
+code exchange. The caller owns the user conversation; the library owns protocol
+state and response validation.
 
 The challenge/answer contract in `src/flow/mod.rs` fixes that conversation.
 Each Keycloak login page yields a `Challenge` (username, password, one-time
@@ -69,6 +69,18 @@ charter Table 2 lists are posted (`username`, `password`, `credentialId` on the
 login page; `otp`, `selectedCredentialId` on the code page), starting from the
 page's own values. An answer for a field the page lacks, a repeated answer, or a
 device the page did not offer is refused before anything is sent.
+
+Code exchange (`PublicClientApplication::exchange_code` in `src/client.rs`)
+redeems the callback's code at the token endpoint as a public client, sending
+`grant_type=authorization_code`, the code, the exact `redirect_uri` string the
+authorization request sent, the client ID, and the login's PKCE verifier (RFC
+6749 section 4.1.3, RFC 7636 section 4.5). The returned ID token must pass the
+same checks as every other grant, and its `nonce` must equal the one this login
+sent. Success finishes the `AuthFlow`. Any failure ends it too, because the code
+is single-use, so the verifier and nonce never outlive the exchange. Keycloak's
+`invalid_grant` (a wrong, expired, or reused code) is `AuthenticationRejected`.
+The exchange stays crate-internal until the driver returns its tokens as
+`AuthStep::Complete`.
 
 For WebAuthn, the intended adapter builds client data for Keycloak's actual
 origin and sends the signing request to a caller-provided authenticator. The
@@ -126,7 +138,7 @@ Docker. See [Testing](Testing.md).
 
 | Method | Intended mechanism | Current status |
 | --- | --- | --- |
-| Password | Direct Access Grant; later native flow | Direct grant implemented |
+| Password | Direct Access Grant; later native flow | Direct grant implemented; native login form and code exchange live-tested with direct grants disabled, crate-internal until the driver is connected |
 | TOTP / HOTP | wolfCrypt HMAC generation and verification; Direct Access Grant; later native flow | SHA-1, SHA-256, and SHA-512 generation and verification implemented; Keycloak credential persistence and live TOTP fixture pending |
 | WebAuthn / passkeys | Native flow and authenticator adapter | Virtual adapter implemented; native flow and live fixture pending |
 | SMS / email OTP | Native flow | Planned |
@@ -173,6 +185,7 @@ Every completed method needs a live test against an unmodified Keycloak
 container. CI resolves the latest stable release and `nightly` image digests,
 then runs the same integration suite against both.
 Unit tests cover token validation and transport boundaries without a server.
-The live suite will grow to cover authorization-code login, WebAuthn through a
-virtual authenticator, recovery, and each new factor as those implementations
-land. See [Testing](Testing.md).
+The live suite covers a password authorization-code login from the login form
+through the code exchange to verified tokens. It will grow to cover WebAuthn
+through a virtual authenticator, recovery, and each new factor as those
+implementations land. See [Testing](Testing.md).

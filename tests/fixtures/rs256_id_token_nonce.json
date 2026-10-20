@@ -1,0 +1,15 @@
+{
+  "jwk": {
+    "keys": [
+      {
+        "kty": "RSA",
+        "kid": "nonce-fixture",
+        "use": "sig",
+        "alg": "RS256",
+        "n": "rblXlPX1FQD1JgyyZMjAAe7tdwmd1gLLjVWQB3lElUGWSEg5AsPuogW7uRJRak7m6s_Mr-UMxEj9fx3zEZ0u54GvkQfKDI6dk52R6VH9UTQ0nfW-tS-4NA8YfSjKTmufDT91ehNPVevXgCwWR8P4XfLRiwZcu_rN9s7Bqtvd32HpYV8ZPYw_v_tzDISLlF9bGuxTatFHyHsOHNhH8ST9bGuzx_SZhKLdmXuFiktVudTshtWdAOLfv_gKdgVtNx82ersjYDmM6yVgzHIaanJujopX3CGZ6FL2CBaScrPljP5vYAzt-ZkmRF33D5jlFhDTOBp4kzMnPiszTAXhf0NlKw",
+        "e": "AQAB"
+      }
+    ]
+  },
+  "token": "eyJhbGciOiJSUzI1NiIsImtpZCI6Im5vbmNlLWZpeHR1cmUiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJodHRwczovL2V4YW1wbGUudGVzdC9yZWFsbXMvdGVzdCIsImF1ZCI6ImNsaWVudCIsInN1YiI6ImFsaWNlIiwiZXhwIjo0MTAyNDQ0ODAwLCJpYXQiOjE3MDAwMDAwMDAsIm5vbmNlIjoiZml4dHVyZS1sb2dpbi1ub25jZSJ9.ACeccK5zhmxVRVJMTouiSZklSnEt7O2gYKBXCXRjLcvO25yjg4XdlNsto_PoYAWlbKneOghmLfcCnff1oT7ZF1B_ryvygbwOIVrp2wZmbm3VJI8QEwM_tGHeHHesWyTyLW6CFTu71_whkn0T37e5YUAmYC8JT5NK0oJ1BQ4dseWmdJF8Mi68hAE0JjJOAo0BL8W3jDBDsB5PlvoAxLZ-at0KqJGOE-fwqLHHRSAIlVwOPro6z0PTKd1pQukXPfY1qAQO3XDsKeA8ys11wmC_y-jt0e0Iivp5dXTP95QywNSDDih5YPeFC_MwVX6_8Nxs50KQExNGLTcPeVwBmoaZEA"
+}
