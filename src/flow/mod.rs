@@ -167,6 +167,7 @@ enum FlowState {
     Active,
     Cancelled,
     Expired,
+    Failed,
     Finished,
 }
 
@@ -221,6 +222,7 @@ impl AuthFlow {
             FlowState::Active => Ok(()),
             FlowState::Cancelled => Err(Error::Cancelled),
             FlowState::Expired => Err(Error::Expired),
+            FlowState::Failed => Err(Error::Protocol("login flow failed")),
             FlowState::Finished => Err(Error::Protocol("login flow already finished")),
         }
     }
@@ -230,6 +232,12 @@ impl AuthFlow {
         self.ensure_active()?;
         self.end(FlowState::Finished);
         Ok(())
+    }
+
+    /// End the login after a failed check (charter section 2.6.4). Later steps are refused.
+    pub(crate) fn fail(&mut self) {
+        self.expire_if_due();
+        self.end(FlowState::Failed);
     }
 
     fn expire_if_due(&mut self) {
@@ -467,6 +475,34 @@ mod tests {
         assert!(matches!(flow.finish(), Err(Error::Expired)));
         assert!(flow.jar.is_empty());
         assert!(matches!(flow.ensure_active(), Err(Error::Expired)));
+    }
+
+    #[test]
+    fn failed_flow_refuses_every_later_step() {
+        let mut flow = flow_with_cookie(DEFAULT_LOGIN_TIMEOUT);
+        flow.fail();
+        assert!(!flow.is_active());
+        assert!(flow.jar.is_empty());
+        assert!(flow.pkce_verifier().is_empty());
+        assert!(flow.oauth_state().is_empty());
+        assert!(flow.nonce().is_empty());
+        flow.cancel();
+        assert_eq!(
+            flow.ensure_active().err(),
+            Some(Error::Protocol("login flow failed"))
+        );
+
+        // A failure never rewrites how the login already ended.
+        let mut expired = flow_with_cookie(Duration::ZERO);
+        expired.fail();
+        assert_eq!(expired.ensure_active().err(), Some(Error::Expired));
+        let mut finished = flow_with_cookie(DEFAULT_LOGIN_TIMEOUT);
+        finished.finish().unwrap();
+        finished.fail();
+        assert_eq!(
+            finished.ensure_active().err(),
+            Some(Error::Protocol("login flow already finished"))
+        );
     }
 
     #[test]

@@ -283,7 +283,7 @@ impl PublicClientApplication {
             Ok(Some(callback)) => callback,
             Ok(None) => return Ok(None),
             Err(error) => {
-                flow.cancel();
+                flow.fail();
                 return Err(error);
             }
         };
@@ -334,13 +334,14 @@ pub struct Start {
     pub scopes: Vec<String>,
 }
 
-/// Ends the login when dropped, including when the caller drops an exchange mid-request.
+/// Fails the login when dropped unfinished, including when the caller drops an exchange
+/// mid-request: whether Keycloak redeemed the code is then unknown.
 struct EndLogin<'a>(&'a mut AuthFlow);
 
 impl Drop for EndLogin<'_> {
     fn drop(&mut self) {
-        // A finished login stays finished: cancel only changes an active flow.
-        self.0.cancel();
+        // A finished login stays finished: fail only changes an active flow.
+        self.0.fail();
     }
 }
 
@@ -733,7 +734,10 @@ mod tests {
             .await
             .is_err());
         for flow in [&mut never_polled, &mut timed_out] {
-            assert_eq!(flow.ensure_active().err(), Some(Error::Cancelled));
+            assert_eq!(
+                flow.ensure_active().err(),
+                Some(Error::Protocol("login flow failed"))
+            );
             assert!(flow.pkce_verifier().is_empty() && flow.nonce().is_empty());
         }
     }
@@ -763,7 +767,10 @@ mod tests {
             let fields: HashMap<_, _> = sent_fields(&endpoint).into_iter().collect();
             assert_eq!(fields["code"], "synthetic-code");
             assert_eq!(fields["code_verifier"], verifier);
-            assert_eq!(flow.ensure_active().err(), Some(Error::Cancelled));
+            assert_eq!(
+                flow.ensure_active().err(),
+                Some(Error::Protocol("login flow failed"))
+            );
             assert!(flow.pkce_verifier().is_empty() && flow.nonce().is_empty());
         }
     }
@@ -866,7 +873,10 @@ mod tests {
                 Some(expected),
                 "{query}"
             );
-            assert_eq!(flow.ensure_active().err(), Some(Error::Cancelled));
+            assert_eq!(
+                flow.ensure_active().err(),
+                Some(Error::Protocol("login flow failed"))
+            );
             assert!(flow.pkce_verifier().is_empty() && flow.nonce().is_empty());
             assert!(endpoint.sent.lock().unwrap().is_empty());
         }
