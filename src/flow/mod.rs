@@ -184,6 +184,10 @@ pub struct AuthFlow {
     nonce: Zeroizing<String>,
     /// The page waiting on the caller's answers; wiped when the flow ends.
     pub(crate) pending: Option<driver::Pending>,
+    /// The client that began this login; no other client can continue it.
+    pub(crate) client: String,
+    /// `Start::login_hint`, the username Keycloak fills in on the login page.
+    pub(crate) login_hint: Option<String>,
 }
 
 impl AuthFlow {
@@ -196,6 +200,8 @@ impl AuthFlow {
             oauth_state: random_base64::<16>()?,
             nonce: random_base64::<16>()?,
             pending: None,
+            client: String::new(),
+            login_hint: None,
         })
     }
 

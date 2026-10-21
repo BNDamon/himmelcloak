@@ -334,6 +334,14 @@ impl PublicClientApplication {
     pub(crate) fn transport(&self) -> &dyn HttpTransport {
         self.transport.as_ref()
     }
+
+    /// Who a login belongs to: the realm, client, and callback its authorization request named.
+    pub(crate) fn login_client(&self) -> String {
+        format!(
+            "{} {} {}",
+            self.metadata.issuer, self.config.client_id, self.config.redirect_uri
+        )
+    }
 }
 
 /// Options for a native browser-flow login.
@@ -1149,9 +1157,10 @@ mod tests {
     }
 
     impl PageFactor for Stub {
-        fn challenges(&self, kind: &PageKind) -> Result<Vec<Challenge>> {
+        fn challenges(&self, kind: &PageKind, login_hint: Option<&str>) -> Result<Vec<Challenge>> {
             Ok(match kind {
                 _ if self.asks_nothing => Vec::new(),
+                PageKind::UsernamePassword if login_hint.is_some() => vec![Challenge::Password],
                 PageKind::OneTimeCode { devices } => vec![Challenge::OneTimeCode {
                     devices: devices
                         .iter()
@@ -1467,12 +1476,13 @@ mod tests {
         let hop = format!("{KEYCLOAK}/login-actions/required-action");
         let mut repeated = redirect(&hop).unwrap();
         repeated.status = 307;
-        let cases: [(Vec<Result<Response>>, Error, usize); 5] = [
+        let cases: [(Vec<Result<Response>>, Error, usize); 6] = [
             (
                 vec![page("<html><body>Something went wrong</body></html>")],
                 Error::Protocol("unknown login page"),
                 1,
             ),
+            (vec![reply(500, LOGIN_PAGE)], Error::HttpStatus(500), 1),
             (
                 vec![redirect(elsewhere)],
                 Error::Protocol("unexpected redirect"),
@@ -1508,6 +1518,85 @@ mod tests {
                 Some(Error::Protocol("login flow failed"))
             );
         }
+    }
+
+    /// Answers after `delay`, like a slow Keycloak.
+    struct Slow(Duration, Arc<TokenEndpoint>);
+
+    impl HttpTransport for Slow {
+        fn send(
+            &self,
+            request: Request,
+        ) -> Pin<Box<dyn Future<Output = Result<Response>> + Send + '_>> {
+            let reply = self.1.send(request);
+            let delay = self.0;
+            Box::pin(async move {
+                tokio::time::sleep(delay).await;
+                reply.await
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_page_that_arrives_after_the_time_limit_is_not_presented() {
+        let (client, endpoint, mut flow) =
+            keycloak(Duration::from_millis(100), |_| vec![page(LOGIN_PAGE)]);
+        let mut slow = app_with(
+            nonce_fixture()["jwk"].clone(),
+            Arc::new(Slow(Duration::from_millis(200), endpoint.clone())),
+        );
+        slow.metadata = client.metadata.clone();
+        assert_eq!(
+            driver::begin(&slow, &Stub::default(), &Start::default(), &mut flow)
+                .await
+                .err(),
+            Some(Error::Expired)
+        );
+        assert_eq!(sent(&endpoint).len(), 1);
+        assert!(flow.jar.is_empty() && flow.pending.is_none());
+    }
+
+    #[tokio::test]
+    async fn only_the_client_that_began_a_login_can_continue_it() {
+        let (client, endpoint, mut flow) = keycloak(DEFAULT_LOGIN_TIMEOUT, two_factor_login);
+        let stub = Stub::default();
+        driver::begin(&client, &stub, &Start::default(), &mut flow)
+            .await
+            .unwrap();
+        let (mut other, other_endpoint) = token_app(json!({}), vec![]);
+        other.config.client_id = "another-client".to_owned();
+        assert_eq!(
+            driver::advance(
+                &other,
+                &stub,
+                &mut flow,
+                Answer::Username("alice".to_owned())
+            )
+            .await
+            .err(),
+            Some(Error::Protocol("login flow belongs to another client"))
+        );
+        assert_eq!(sent(&endpoint).len(), 1);
+        assert!(sent(&other_endpoint).is_empty());
+        assert_eq!(
+            flow.ensure_active().err(),
+            Some(Error::Protocol("login flow failed"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_login_hint_reaches_the_factor() {
+        let (client, endpoint, mut flow) = keycloak(DEFAULT_LOGIN_TIMEOUT, two_factor_login);
+        let start = Start {
+            login_hint: Some("alice".to_owned()),
+            ..Start::default()
+        };
+        let first = driver::begin(&client, &Stub::default(), &start, &mut flow).await;
+        assert!(matches!(challenge(first), Challenge::Password));
+        let asked = Url::parse(&sent(&endpoint)[0].0).unwrap();
+        assert!(asked
+            .query_pairs()
+            .any(|(name, value)| name == "login_hint" && value == "alice"));
     }
 
     #[tokio::test]

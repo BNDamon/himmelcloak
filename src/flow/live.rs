@@ -292,7 +292,7 @@ impl Factors for PasswordStub {
 }
 
 impl PageFactor for PasswordStub {
-    fn challenges(&self, _kind: &PageKind) -> Result<Vec<Challenge>> {
+    fn challenges(&self, _kind: &PageKind, _login_hint: Option<&str>) -> Result<Vec<Challenge>> {
         Ok(vec![Challenge::Username, Challenge::Password])
     }
 

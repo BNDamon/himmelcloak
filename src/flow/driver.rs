@@ -33,7 +33,7 @@ use crate::client::{PublicClientApplication, Start};
 use crate::error::{Error, Result};
 use crate::flow::classify::PageKind;
 use crate::flow::factor::Factors;
-use crate::flow::fetch::{self, Fetched, Page, Redirect};
+use crate::flow::fetch::{self, CookieJar, Fetched, Page, Redirect};
 use crate::flow::form::{self, Form};
 use crate::flow::{Answer, AuthFlow, AuthStep, Challenge};
 
@@ -99,6 +99,8 @@ async fn first_page(
     flow: &mut AuthFlow,
 ) -> Result<AuthStep> {
     let url = app.authorization_url(start, flow)?;
+    flow.client = app.login_client();
+    flow.login_hint = start.login_hint.clone();
     let fetched = fetch::get(app.transport(), &mut flow.jar, url).await?;
     resolve(app, factors, flow, fetched).await
 }
@@ -114,6 +116,10 @@ async fn answer_page(
         .pending
         .take()
         .ok_or(Error::Protocol("no challenge is waiting for an answer"))?;
+    // Another client would get this login's code and PKCE verifier at its own token endpoint.
+    if flow.client != app.login_client() {
+        return Err(Error::Protocol("login flow belongs to another client"));
+    }
     pending.expect.check(&answer)?;
     pending.answers.push(answer);
     if let Some(next) = pending.queue.pop_front() {
@@ -121,6 +127,18 @@ async fn answer_page(
         flow.pending = Some(pending);
         return Ok(AuthStep::Challenge(next));
     }
+    let fetched = post(app, factors, &mut flow.jar, pending).await?;
+    resolve(app, factors, flow, fetched).await
+}
+
+/// Post the page's form. Taking the page by value wipes its answers once the form is sent,
+/// before any redirect is followed or the code is redeemed.
+async fn post(
+    app: &PublicClientApplication,
+    factors: &dyn Factors,
+    jar: &mut CookieJar,
+    pending: Pending,
+) -> Result<Fetched> {
     let factor = factors
         .for_page(&pending.kind)
         .ok_or(Error::UnsupportedFactor)?;
@@ -129,11 +147,7 @@ async fn answer_page(
         .iter()
         .map(|(name, value)| (name.as_str(), value.as_str()))
         .collect();
-    let fetched = pending
-        .form
-        .submit(app.transport(), &mut flow.jar, &fields)
-        .await?;
-    resolve(app, factors, flow, fetched).await
+    pending.form.submit(app.transport(), jar, &fields).await
 }
 
 /// Turn Keycloak's response into the next step: a page's first challenge, or completion at the
@@ -147,7 +161,14 @@ async fn resolve(
     let mut followed = 0;
     loop {
         let redirect = match fetched {
-            Fetched::Page(page) => return present(factors, flow, &page),
+            Fetched::Page(page) => {
+                // The response can land after the time limit; never ask for more past it.
+                flow.ensure_active()?;
+                if page.status != 200 {
+                    return Err(Error::HttpStatus(page.status));
+                }
+                return present(factors, flow, &page);
+            }
             Fetched::Redirect(redirect) => redirect,
         };
         if let Some(complete) = app.complete_at_callback(&redirect, flow).await? {
@@ -169,7 +190,7 @@ async fn resolve(
 fn present(factors: &dyn Factors, flow: &mut AuthFlow, page: &Page) -> Result<AuthStep> {
     let (kind, form) = form::extract(page)?;
     let factor = factors.for_page(&kind).ok_or(Error::UnsupportedFactor)?;
-    let mut queue = VecDeque::from(factor.challenges(&kind)?);
+    let mut queue = VecDeque::from(factor.challenges(&kind, flow.login_hint.as_deref())?);
     let first = queue
         .pop_front()
         .ok_or(Error::Protocol("page asks no challenge"))?;

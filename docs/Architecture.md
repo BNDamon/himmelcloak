@@ -58,8 +58,12 @@ method the page offered, a WebAuthn credential from the allow-list, and exactly
 the required action's fields. Keycloak's own same-origin redirects are
 followed, at most five in a row. A redirect to another site, or one that would
 repeat a form post (307 or 308), is refused, and the redirect to the registered
-callback completes the login through the code exchange. Any refusal, error, or
-step dropped mid-request ends the login as failed. No factor handler is
+callback completes the login through the code exchange. A page is presented
+only if it returned 200 and the login is still within its time limit, and only
+the client that began a login can continue it. Any refusal, error, or step
+dropped mid-request ends the login as failed. Each handler also receives
+`Start::login_hint`, so it can skip asking a username Keycloak already filled
+in. No factor handler is
 registered yet, so a real login stops at its first page with
 `UnsupportedFactor`; the password and one-time-code handlers plug in as their
 slices land.

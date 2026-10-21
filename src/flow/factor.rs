@@ -30,7 +30,8 @@ use crate::flow::{Answer, Challenge};
 /// One factor's handling of the pages it owns.
 pub(crate) trait PageFactor: Send + Sync {
     /// The challenges this page asks, in order. The form is posted once all are answered.
-    fn challenges(&self, kind: &PageKind) -> Result<Vec<Challenge>>;
+    /// `login_hint` is `Start::login_hint`, which Keycloak already filled in as the username.
+    fn challenges(&self, kind: &PageKind, login_hint: Option<&str>) -> Result<Vec<Challenge>>;
 
     /// The form fields to post. `answers` come in the order `challenges` asked them, and each
     /// already matched its challenge.
