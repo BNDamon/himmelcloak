@@ -48,7 +48,7 @@ secrets, and makes every later step fail with `Cancelled`, `Expired`, or a
 protocol error. The driver checks this before every step. Only
 `initiate_auth_flow` creates a flow.
 `initiate_auth_flow` and `continue_auth_flow` otherwise still return
-`NotImplemented` until the page driver and code exchange are connected.
+`NotImplemented` until the page driver walks a whole login.
 
 Page fetching (`src/flow/fetch.rs`) is in place beneath the driver. Each
 `AuthFlow` owns its own cookie jar, which keeps libcurl's cookie lines per exact
@@ -79,8 +79,12 @@ same checks as every other grant, and its `nonce` must equal the one this login
 sent. Success finishes the `AuthFlow`. Any failure ends it too, because the code
 is single-use, so the verifier and nonce never outlive the exchange. Keycloak's
 `invalid_grant` (a wrong, expired, or reused code) is `AuthenticationRejected`.
-The exchange stays crate-internal until the driver returns its tokens as
-`AuthStep::Complete`.
+`complete_at_callback` connects the exchange to the driver: Keycloak's redirect
+to the registered callback is redeemed at once and the login becomes
+`AuthStep::Complete`, while any other redirect is left for the driver. A refused
+callback (wrong `state`, `access_denied`, or no code) ends the login without
+redeeming anything, and replaying a callback fails because its login has ended.
+Both stay crate-internal until the driver walks a whole login.
 
 For WebAuthn, the intended adapter builds client data for Keycloak's actual
 origin and sends the signing request to a caller-provided authenticator. The
@@ -191,6 +195,7 @@ container. CI resolves the latest stable release and `nightly` image digests,
 then runs the same integration suite against both.
 Unit tests cover token validation and transport boundaries without a server.
 The live suite covers a password authorization-code login from the login form
-through the code exchange to verified tokens. It will grow to cover WebAuthn
+through the code exchange to verified tokens, with direct grants disabled, and
+proves Keycloak refuses a reused or stale code. It will grow to cover WebAuthn
 through a virtual authenticator, recovery, and each new factor as those
 implementations land. See [Testing](Testing.md).

@@ -10,7 +10,8 @@ Each local run recreates the Keycloak container so realm import uses the current
 Run `make oracle-down` afterward to remove the test server and its state.
 
 Run `tests/keycloak/run.sh --verbose` (or `make test-live-verbose`) to see
-Himmelcloak's client steps and Keycloak's `LOGIN`/`LOGIN_ERROR` event lines.
+Himmelcloak's client steps and Keycloak's `LOGIN`/`LOGIN_ERROR` and
+`CODE_TO_TOKEN`/`CODE_TO_TOKEN_ERROR` event lines.
 The trace reports outcomes and subjects but never prints passwords or tokens.
 CI enables the same client trace and server event output for each live run.
 
@@ -23,9 +24,16 @@ as submitting the login form: a correct password reaches the registered callback
 with a code, and a wrong one returns the login page. The code exchange scenario
 redeems that code for tokens that pass the ID token checks, and a code Keycloak
 never issued is rejected. They log in through the
-realm's `himmelcloak-browser-only` client, which has direct grants disabled, and
-first confirm the password grant is refused for it, so they prove the browser-free
-flow works without the password grant.
+realm's `himmelcloak-browser-only` client, which has direct grants disabled. The
+completion scenario first confirms Keycloak refuses the password grant for that
+client, then completes the login at the callback, so it proves the browser-free
+flow works without the password grant. It then redeems the same code again with
+the login's own verifier and nonce, which Keycloak refuses and answers by
+revoking the session the code created. A separate scenario holds a code past
+its lifespan and expects it refused. The test realm sets `accessCodeLifespan`
+to 10 seconds so that scenario waits 12 seconds instead of over a minute; this
+only shortens how long a code can be redeemed, in the test realm only, and real
+deployments keep their own Keycloak setting.
 CI runs the same test against the latest stable release tag and the `nightly`
 development image on pushes to main/release branches, every PR, and manual dispatch.
 Each login job resolves and records its own image digest. Nightly image resolution,
