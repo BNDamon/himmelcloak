@@ -24,24 +24,255 @@
 //! Rust (no browser): GET the page, extract the core-defined form/challenge, POST the answer.
 //! Theme-independent, classification keys off core field names (see `classify`), never text.
 use core::fmt;
+use std::collections::VecDeque;
 
 use url::Url;
 use zeroize::{Zeroize, Zeroizing};
 
+use crate::client::{PublicClientApplication, Start};
 use crate::error::{Error, Result};
-use crate::flow::fetch::Redirect;
-use crate::flow::{Answer, AuthFlow, AuthStep};
+use crate::flow::classify::PageKind;
+use crate::flow::factor::Factors;
+use crate::flow::fetch::{self, Fetched, Page, Redirect};
+use crate::flow::form::{self, Form};
+use crate::flow::{Answer, AuthFlow, AuthStep, Challenge};
 
-/// Fetch + classify the current step (the challenge to present, or completion).
-pub(crate) fn step(flow: &mut AuthFlow) -> Result<AuthStep> {
-    flow.ensure_active()?;
-    Err(Error::NotImplemented)
+/// Same-origin redirects followed between two pages before the login is refused.
+const MAX_REDIRECTS: usize = 5;
+
+/// The page waiting on the caller: its form, the challenge being answered, the challenges still
+/// to ask, and the answers so far.
+pub(crate) struct Pending {
+    kind: PageKind,
+    form: Form,
+    expect: Expect,
+    queue: VecDeque<Challenge>,
+    answers: Vec<Answer>,
 }
 
-/// Post the caller's answer to the current authenticator and advance.
-pub(crate) fn advance(flow: &mut AuthFlow, _answer: Answer) -> Result<AuthStep> {
+/// Start the login: fetch Keycloak's first page and return what it asks.
+pub(crate) async fn begin(
+    app: &PublicClientApplication,
+    factors: &dyn Factors,
+    start: &Start,
+    flow: &mut AuthFlow,
+) -> Result<AuthStep> {
+    let mut step = Step { flow, done: false };
+    let next = first_page(app, factors, start, step.flow).await;
+    step.done = next.is_ok();
+    next
+}
+
+/// Check the caller's answer against the waiting challenge, then ask the page's next challenge
+/// or post its form and move on.
+pub(crate) async fn advance(
+    app: &PublicClientApplication,
+    factors: &dyn Factors,
+    flow: &mut AuthFlow,
+    answer: Answer,
+) -> Result<AuthStep> {
+    let mut step = Step { flow, done: false };
+    let next = answer_page(app, factors, step.flow, answer).await;
+    step.done = next.is_ok();
+    next
+}
+
+/// Fails the login unless the step succeeds. A step that errors or is dropped mid-request leaves
+/// Keycloak's side of the login unknown, so it cannot be resumed.
+struct Step<'a> {
+    flow: &'a mut AuthFlow,
+    done: bool,
+}
+
+impl Drop for Step<'_> {
+    fn drop(&mut self) {
+        if !self.done {
+            self.flow.fail();
+        }
+    }
+}
+
+async fn first_page(
+    app: &PublicClientApplication,
+    factors: &dyn Factors,
+    start: &Start,
+    flow: &mut AuthFlow,
+) -> Result<AuthStep> {
+    let url = app.authorization_url(start, flow)?;
+    let fetched = fetch::get(app.transport(), &mut flow.jar, url).await?;
+    resolve(app, factors, flow, fetched).await
+}
+
+async fn answer_page(
+    app: &PublicClientApplication,
+    factors: &dyn Factors,
+    flow: &mut AuthFlow,
+    answer: Answer,
+) -> Result<AuthStep> {
     flow.ensure_active()?;
-    Err(Error::NotImplemented)
+    let mut pending = flow
+        .pending
+        .take()
+        .ok_or(Error::Protocol("no challenge is waiting for an answer"))?;
+    pending.expect.check(&answer)?;
+    pending.answers.push(answer);
+    if let Some(next) = pending.queue.pop_front() {
+        pending.expect = Expect::of(&next);
+        flow.pending = Some(pending);
+        return Ok(AuthStep::Challenge(next));
+    }
+    let factor = factors
+        .for_page(&pending.kind)
+        .ok_or(Error::UnsupportedFactor)?;
+    let fields = factor.fields(&pending.kind, &pending.answers)?;
+    let fields: Vec<(&str, &str)> = fields
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
+    let fetched = pending
+        .form
+        .submit(app.transport(), &mut flow.jar, &fields)
+        .await?;
+    resolve(app, factors, flow, fetched).await
+}
+
+/// Turn Keycloak's response into the next step: a page's first challenge, or completion at the
+/// callback. Keycloak's own same-origin redirects are followed; any other redirect is refused.
+async fn resolve(
+    app: &PublicClientApplication,
+    factors: &dyn Factors,
+    flow: &mut AuthFlow,
+    mut fetched: Fetched,
+) -> Result<AuthStep> {
+    let mut followed = 0;
+    loop {
+        let redirect = match fetched {
+            Fetched::Page(page) => return present(factors, flow, &page),
+            Fetched::Redirect(redirect) => redirect,
+        };
+        if let Some(complete) = app.complete_at_callback(&redirect, flow).await? {
+            return Ok(complete);
+        }
+        // A 307 or 308 would repeat the form post to wherever it points.
+        if !redirect.same_origin || redirect.kind.repeats_request() {
+            return Err(Error::Protocol("unexpected redirect"));
+        }
+        if followed == MAX_REDIRECTS {
+            return Err(Error::Protocol("too many redirects"));
+        }
+        followed += 1;
+        fetched = fetch::get(app.transport(), &mut flow.jar, redirect.location.clone()).await?;
+    }
+}
+
+/// Hand the page to its factor and return the page's first challenge.
+fn present(factors: &dyn Factors, flow: &mut AuthFlow, page: &Page) -> Result<AuthStep> {
+    let (kind, form) = form::extract(page)?;
+    let factor = factors.for_page(&kind).ok_or(Error::UnsupportedFactor)?;
+    let mut queue = VecDeque::from(factor.challenges(&kind)?);
+    let first = queue
+        .pop_front()
+        .ok_or(Error::Protocol("page asks no challenge"))?;
+    flow.pending = Some(Pending {
+        kind,
+        form,
+        expect: Expect::of(&first),
+        queue,
+        answers: Vec::new(),
+    });
+    Ok(AuthStep::Challenge(first))
+}
+
+/// What the waiting challenge accepts, kept because the `Challenge` itself goes to the caller.
+enum Expect {
+    Username,
+    Password,
+    OneTimeCode { devices: Vec<String> },
+    RecoveryCode,
+    WebAuthn { allowed: Vec<Vec<u8>> },
+    ChooseMethod { methods: Vec<String> },
+    RequiredAction { fields: Vec<String> },
+    Info,
+}
+
+impl Expect {
+    fn of(challenge: &Challenge) -> Self {
+        match challenge {
+            Challenge::Username => Self::Username,
+            Challenge::Password => Self::Password,
+            Challenge::OneTimeCode { devices } => Self::OneTimeCode {
+                devices: devices.iter().map(|device| device.id.clone()).collect(),
+            },
+            Challenge::RecoveryCode { .. } => Self::RecoveryCode,
+            Challenge::WebAuthn(request) => Self::WebAuthn {
+                allowed: request
+                    .allow_credentials
+                    .iter()
+                    .map(|credential| credential.id.clone())
+                    .collect(),
+            },
+            Challenge::ChooseMethod { methods } => Self::ChooseMethod {
+                methods: methods.iter().map(|method| method.id.clone()).collect(),
+            },
+            Challenge::RequiredAction(action) => Self::RequiredAction {
+                fields: action
+                    .fields
+                    .iter()
+                    .map(|field| field.name.clone())
+                    .collect(),
+            },
+            Challenge::Info { .. } => Self::Info,
+        }
+    }
+
+    /// Refuse an answer the waiting challenge did not ask for, before anything is sent.
+    fn check(&self, answer: &Answer) -> Result<()> {
+        let mismatch = Error::Protocol("answer does not match the challenge");
+        match (self, answer) {
+            (Self::Username, Answer::Username(_))
+            | (Self::Password, Answer::Password(_))
+            | (Self::RecoveryCode, Answer::RecoveryCode(_))
+            | (Self::Info, Answer::Acknowledge) => Ok(()),
+            // With one device the page offers no choice; with several, the caller must pick one.
+            (Self::OneTimeCode { devices }, Answer::OneTimeCode { device, .. }) => match device {
+                None if devices.is_empty() => Ok(()),
+                None => Err(mismatch),
+                Some(device) if devices.contains(device) => Ok(()),
+                Some(_) => Err(Error::Protocol("device not offered by the page")),
+            },
+            // An empty allow-list lets the authenticator choose a discoverable credential.
+            (Self::WebAuthn { allowed }, Answer::WebAuthn(assertion)) => {
+                if allowed.is_empty() || allowed.contains(&assertion.credential_id) {
+                    Ok(())
+                } else {
+                    Err(Error::Protocol("credential not allowed"))
+                }
+            }
+            (Self::ChooseMethod { methods }, Answer::ChooseMethod(method)) => {
+                if methods.contains(method) {
+                    Ok(())
+                } else {
+                    Err(Error::Protocol("method not offered"))
+                }
+            }
+            (Self::RequiredAction { fields }, Answer::RequiredAction(given)) => {
+                let answered_once = |field: &String| {
+                    given
+                        .values
+                        .iter()
+                        .filter(|(name, _)| name == field)
+                        .count()
+                        == 1
+                };
+                if given.values.len() == fields.len() && fields.iter().all(answered_once) {
+                    Ok(())
+                } else {
+                    Err(Error::Protocol("answer does not match the required action"))
+                }
+            }
+            _ => Err(mismatch),
+        }
+    }
 }
 
 /// The authorization code from Keycloak's final redirect to the registered callback, after its

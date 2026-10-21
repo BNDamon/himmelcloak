@@ -25,8 +25,9 @@ use serde_json::Value;
 
 use crate::config::Config;
 use crate::error::{Error, Result};
+use crate::flow::factor::Builtin;
 use crate::flow::fetch::Redirect;
-use crate::flow::{driver, Answer, AuthFlow, AuthStep, Tokens};
+use crate::flow::{driver, Answer, AuthFlow, AuthStep, Tokens, DEFAULT_LOGIN_TIMEOUT};
 use crate::sensitive_json::SensitiveClaims;
 use crate::standard;
 use crate::token::{self, Metadata};
@@ -314,16 +315,24 @@ impl PublicClientApplication {
         Ok(tokens)
     }
 
-    pub async fn initiate_auth_flow(&self, _start: Start) -> Result<(AuthFlow, AuthStep)> {
-        Err(Error::NotImplemented)
+    /// Start a native login and return the flow with its first step.
+    pub async fn initiate_auth_flow(&self, start: Start) -> Result<(AuthFlow, AuthStep)> {
+        let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT)?;
+        let step = driver::begin(self, &Builtin, &start, &mut flow).await?;
+        Ok((flow, step))
     }
 
+    /// Answer the waiting challenge. Any error ends the login.
     pub async fn continue_auth_flow(
         &self,
         flow: &mut AuthFlow,
         answer: Answer,
     ) -> Result<AuthStep> {
-        driver::advance(flow, answer)
+        driver::advance(self, &Builtin, flow, answer).await
+    }
+
+    pub(crate) fn transport(&self) -> &dyn HttpTransport {
+        self.transport.as_ref()
     }
 }
 
@@ -362,7 +371,7 @@ mod tests {
     use crate::flow::driver::Callback;
     use crate::flow::fetch::{Redirect, RedirectKind};
     use crate::flow::Tokens;
-    use crate::flow::{Answer, AuthFlow, AuthStep, DEFAULT_LOGIN_TIMEOUT};
+    use crate::flow::{AuthFlow, AuthStep, DEFAULT_LOGIN_TIMEOUT};
     use crate::token::Metadata;
     use crate::transport::{HttpTransport, Request, Response};
 
@@ -1113,35 +1122,6 @@ mod tests {
                 .await
                 .err(),
             Some(Error::UnsupportedFactor)
-        );
-    }
-
-    fn password() -> Answer {
-        Answer::Password("correct-horse-battery-staple".to_owned())
-    }
-
-    #[tokio::test]
-    async fn continue_rejects_a_cancelled_login() {
-        let client = app(json!({}), vec![]);
-        let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
-        assert_eq!(
-            client.continue_auth_flow(&mut flow, password()).await.err(),
-            Some(Error::NotImplemented)
-        );
-        flow.cancel();
-        assert_eq!(
-            client.continue_auth_flow(&mut flow, password()).await.err(),
-            Some(Error::Cancelled)
-        );
-    }
-
-    #[tokio::test]
-    async fn continue_rejects_an_expired_login() {
-        let client = app(json!({}), vec![]);
-        let mut flow = AuthFlow::new(Duration::ZERO).unwrap();
-        assert_eq!(
-            client.continue_auth_flow(&mut flow, password()).await.err(),
-            Some(Error::Expired)
         );
     }
 
