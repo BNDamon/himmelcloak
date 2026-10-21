@@ -364,14 +364,17 @@ mod tests {
 
     use serde_json::{json, Value};
     use url::{form_urlencoded, Url};
+    use zeroize::Zeroizing;
 
     use super::{PublicClientApplication, Start};
     use crate::config::Config;
     use crate::error::{Error, Result};
-    use crate::flow::driver::Callback;
+    use crate::flow::classify::PageKind;
+    use crate::flow::driver::{self, Callback};
+    use crate::flow::factor::{Factors, PageFactor};
     use crate::flow::fetch::{Redirect, RedirectKind};
     use crate::flow::Tokens;
-    use crate::flow::{AuthFlow, AuthStep, DEFAULT_LOGIN_TIMEOUT};
+    use crate::flow::{Answer, AuthFlow, AuthStep, Challenge, OtpDevice, DEFAULT_LOGIN_TIMEOUT};
     use crate::token::Metadata;
     use crate::transport::{HttpTransport, Request, Response};
 
@@ -1122,6 +1125,462 @@ mod tests {
                 .await
                 .err(),
             Some(Error::UnsupportedFactor)
+        );
+    }
+
+    const LOGIN_PAGE: &str = include_str!("../tests/fixtures/keycloak/base/login.html");
+    const CODE_PAGE: &str = include_str!("../tests/fixtures/keycloak/base/login-otp-devices.html");
+    const KEYCLOAK: &str = "https://keycloak.test:8443/realms/himmelcloak-test";
+    const FIRST_DEVICE: &str = "00000000-0000-4000-8000-000000000001";
+    const SECOND_DEVICE: &str = "00000000-0000-4000-8000-000000000002";
+
+    /// Stand-in factor handlers, built the way the password and one-time-code slices will be:
+    /// the login page asks `Username` then `Password`, and the code page asks for a code.
+    #[derive(Default)]
+    struct Stub {
+        asks_nothing: bool,
+        refuses_answers: bool,
+    }
+
+    impl Factors for Stub {
+        fn for_page(&self, _kind: &PageKind) -> Option<&dyn PageFactor> {
+            Some(self)
+        }
+    }
+
+    impl PageFactor for Stub {
+        fn challenges(&self, kind: &PageKind) -> Result<Vec<Challenge>> {
+            Ok(match kind {
+                _ if self.asks_nothing => Vec::new(),
+                PageKind::OneTimeCode { devices } => vec![Challenge::OneTimeCode {
+                    devices: devices
+                        .iter()
+                        .map(|device| OtpDevice::new(device.id.clone(), device.label.clone()))
+                        .collect(),
+                }],
+                _ => vec![Challenge::Username, Challenge::Password],
+            })
+        }
+
+        fn fields(
+            &self,
+            _kind: &PageKind,
+            answers: &[Answer],
+        ) -> Result<Vec<(String, Zeroizing<String>)>> {
+            if self.refuses_answers {
+                return Err(Error::Protocol("stub refused the answers"));
+            }
+            let field =
+                |name: &str, value: &str| (name.to_owned(), Zeroizing::new(value.to_owned()));
+            let mut fields = Vec::new();
+            for answer in answers {
+                match answer {
+                    Answer::Username(name) => fields.push(field("username", name)),
+                    Answer::Password(password) => fields.push(field("password", password)),
+                    Answer::OneTimeCode { code, device } => {
+                        fields.push(field("otp", code));
+                        fields.extend(
+                            device
+                                .as_deref()
+                                .map(|id| field("selectedCredentialId", id)),
+                        );
+                    }
+                    _ => unreachable!("the stub asks only for these answers"),
+                }
+            }
+            Ok(fields)
+        }
+    }
+
+    fn page(html: &str) -> Result<Response> {
+        reply(200, html)
+    }
+
+    fn redirect(location: &str) -> Result<Response> {
+        Ok(Response {
+            status: 302,
+            headers: vec![("Location".to_owned(), location.to_owned())],
+            body: Vec::new(),
+            cookies: Vec::new(),
+        })
+    }
+
+    /// A Keycloak that serves `replies` in order and records each request. The login's nonce
+    /// matches the signed ID token fixture.
+    fn keycloak(
+        time_limit: Duration,
+        replies: impl FnOnce(&AuthFlow) -> Vec<Result<Response>>,
+    ) -> (PublicClientApplication, Arc<TokenEndpoint>, AuthFlow) {
+        let fixture = nonce_fixture();
+        let flow = AuthFlow::with_nonce(time_limit, FIXTURE_NONCE).unwrap();
+        let (mut client, endpoint) = token_app(fixture["jwk"].clone(), replies(&flow));
+        client.metadata.authorization_endpoint =
+            Url::parse(&format!("{KEYCLOAK}/protocol/openid-connect/auth")).unwrap();
+        (client, endpoint, flow)
+    }
+
+    fn callback_for(flow: &AuthFlow) -> String {
+        format!(
+            "{CALLBACK}?state={}&code=synthetic-code",
+            flow.oauth_state()
+        )
+    }
+
+    /// Keycloak's side of a username, password, and one-time-code login.
+    fn two_factor_login(flow: &AuthFlow) -> Vec<Result<Response>> {
+        let fixture = nonce_fixture();
+        vec![
+            page(LOGIN_PAGE),
+            page(CODE_PAGE),
+            redirect(&format!(
+                "{KEYCLOAK}/login-actions/authenticate?execution=next"
+            )),
+            redirect(&callback_for(flow)),
+            reply(200, &token_response(&fixture["token"])),
+        ]
+    }
+
+    fn sent(endpoint: &TokenEndpoint) -> Vec<(String, String)> {
+        endpoint.sent.lock().unwrap().clone()
+    }
+
+    fn posted(body: &str) -> HashMap<String, String> {
+        form_urlencoded::parse(body.as_bytes())
+            .into_owned()
+            .collect()
+    }
+
+    fn code(device: Option<&str>) -> Answer {
+        Answer::OneTimeCode {
+            code: "123456".to_owned(),
+            device: device.map(str::to_owned),
+        }
+    }
+
+    fn challenge(step: Result<AuthStep>) -> Challenge {
+        match step {
+            Ok(AuthStep::Challenge(challenge)) => challenge,
+            Ok(_) => panic!("expected a challenge"),
+            Err(error) => panic!("expected a challenge, got {error:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stub_two_factor_login_runs_the_contract_end_to_end() {
+        let (client, endpoint, mut flow) = keycloak(DEFAULT_LOGIN_TIMEOUT, two_factor_login);
+        let stub = Stub::default();
+
+        let first = driver::begin(&client, &stub, &Start::default(), &mut flow).await;
+        assert!(matches!(challenge(first), Challenge::Username));
+        let requests = sent(&endpoint);
+        assert_eq!(requests.len(), 1);
+        let asked = Url::parse(&requests[0].0).unwrap();
+        assert_eq!(
+            asked.path(),
+            "/realms/himmelcloak-test/protocol/openid-connect/auth"
+        );
+        assert!(asked
+            .query_pairs()
+            .any(|(name, value)| name == "state" && value == flow.oauth_state()));
+
+        let next = driver::advance(
+            &client,
+            &stub,
+            &mut flow,
+            Answer::Username("alice".to_owned()),
+        )
+        .await;
+        assert!(matches!(challenge(next), Challenge::Password));
+        assert_eq!(
+            sent(&endpoint).len(),
+            1,
+            "the page is posted once, after both answers"
+        );
+
+        let next =
+            driver::advance(&client, &stub, &mut flow, Answer::Password("pw".to_owned())).await;
+        let Challenge::OneTimeCode { devices } = challenge(next) else {
+            panic!("expected the code page");
+        };
+        let ids: Vec<_> = devices.iter().map(|device| device.id.as_str()).collect();
+        assert_eq!(ids, [FIRST_DEVICE, SECOND_DEVICE]);
+        let login = posted(&sent(&endpoint)[1].1);
+        assert_eq!(login["username"], "alice");
+        assert_eq!(login["password"], "pw");
+
+        let done = driver::advance(&client, &stub, &mut flow, code(Some(SECOND_DEVICE))).await;
+        let Ok(AuthStep::Complete(tokens)) = done else {
+            panic!("the callback must complete the login");
+        };
+        assert_eq!(tokens.verified_subject.as_deref(), Some("alice"));
+        let requests = sent(&endpoint);
+        let otp = posted(&requests[2].1);
+        assert_eq!(otp["otp"], "123456");
+        assert_eq!(otp["selectedCredentialId"], SECOND_DEVICE);
+        assert!(requests[3]
+            .0
+            .ends_with("/login-actions/authenticate?execution=next"));
+        assert_eq!(posted(&requests[4].1)["code"], "synthetic-code");
+        assert_eq!(requests.len(), 5);
+        assert_eq!(
+            flow.ensure_active().err(),
+            Some(Error::Protocol("login flow already finished"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wrong_answer_at_any_step_ends_the_login_before_sending() {
+        let mismatch = Error::Protocol("answer does not match the challenge");
+        let cases = [
+            (vec![], Answer::Acknowledge, mismatch.clone()),
+            (
+                vec![Answer::Username("alice".to_owned())],
+                Answer::Username("alice".to_owned()),
+                mismatch.clone(),
+            ),
+            (
+                vec![
+                    Answer::Username("alice".to_owned()),
+                    Answer::Password("pw".to_owned()),
+                ],
+                Answer::Password("pw".to_owned()),
+                mismatch.clone(),
+            ),
+            (
+                vec![
+                    Answer::Username("alice".to_owned()),
+                    Answer::Password("pw".to_owned()),
+                ],
+                code(None),
+                mismatch,
+            ),
+            (
+                vec![
+                    Answer::Username("alice".to_owned()),
+                    Answer::Password("pw".to_owned()),
+                ],
+                code(Some("another-device")),
+                Error::Protocol("device not offered by the page"),
+            ),
+        ];
+        for (answers, wrong, expected) in cases {
+            let (client, endpoint, mut flow) = keycloak(DEFAULT_LOGIN_TIMEOUT, two_factor_login);
+            let stub = Stub::default();
+            driver::begin(&client, &stub, &Start::default(), &mut flow)
+                .await
+                .unwrap();
+            for answer in answers {
+                driver::advance(&client, &stub, &mut flow, answer)
+                    .await
+                    .unwrap();
+            }
+            let before = sent(&endpoint).len();
+            assert_eq!(
+                driver::advance(&client, &stub, &mut flow, wrong)
+                    .await
+                    .err(),
+                Some(expected)
+            );
+            assert_eq!(sent(&endpoint).len(), before);
+            assert_eq!(
+                flow.ensure_active().err(),
+                Some(Error::Protocol("login flow failed"))
+            );
+            assert!(flow.jar.is_empty() && flow.pending.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn an_ended_or_idle_login_takes_no_answer() {
+        let (client, endpoint, mut finished) = keycloak(DEFAULT_LOGIN_TIMEOUT, two_factor_login);
+        let stub = Stub::default();
+        driver::begin(&client, &stub, &Start::default(), &mut finished)
+            .await
+            .unwrap();
+        for answer in [
+            Answer::Username("alice".to_owned()),
+            Answer::Password("pw".to_owned()),
+            code(Some(FIRST_DEVICE)),
+        ] {
+            driver::advance(&client, &stub, &mut finished, answer)
+                .await
+                .unwrap();
+        }
+        let mut cancelled = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+        cancelled.cancel();
+        let mut expired = AuthFlow::new(Duration::ZERO).unwrap();
+        let mut failed = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+        failed.fail();
+        let mut idle = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+        let before = sent(&endpoint).len();
+        for (flow, expected) in [
+            (
+                &mut finished,
+                Error::Protocol("login flow already finished"),
+            ),
+            (&mut cancelled, Error::Cancelled),
+            (&mut expired, Error::Expired),
+            (&mut failed, Error::Protocol("login flow failed")),
+            (
+                &mut idle,
+                Error::Protocol("no challenge is waiting for an answer"),
+            ),
+        ] {
+            assert_eq!(
+                client
+                    .continue_auth_flow(flow, Answer::Acknowledge)
+                    .await
+                    .err(),
+                Some(expected)
+            );
+            assert!(!flow.is_active());
+        }
+        assert_eq!(sent(&endpoint).len(), before);
+    }
+
+    #[tokio::test]
+    async fn a_login_that_runs_out_of_time_between_challenges_is_refused() {
+        let (client, endpoint, mut flow) = keycloak(Duration::from_millis(200), two_factor_login);
+        let stub = Stub::default();
+        driver::begin(&client, &stub, &Start::default(), &mut flow)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            driver::advance(
+                &client,
+                &stub,
+                &mut flow,
+                Answer::Username("alice".to_owned())
+            )
+            .await
+            .err(),
+            Some(Error::Expired)
+        );
+        assert_eq!(sent(&endpoint).len(), 1);
+        assert!(flow.jar.is_empty() && flow.pending.is_none());
+    }
+
+    #[tokio::test]
+    async fn keycloak_responses_the_login_cannot_follow_end_it() {
+        let elsewhere = "https://elsewhere.test/realms/himmelcloak-test/login";
+        let hop = format!("{KEYCLOAK}/login-actions/required-action");
+        let mut repeated = redirect(&hop).unwrap();
+        repeated.status = 307;
+        let cases: [(Vec<Result<Response>>, Error, usize); 5] = [
+            (
+                vec![page("<html><body>Something went wrong</body></html>")],
+                Error::Protocol("unknown login page"),
+                1,
+            ),
+            (
+                vec![redirect(elsewhere)],
+                Error::Protocol("unexpected redirect"),
+                1,
+            ),
+            (
+                vec![Ok(repeated)],
+                Error::Protocol("unexpected redirect"),
+                1,
+            ),
+            (
+                (0..=5).map(|_| redirect(&hop)).collect(),
+                Error::Protocol("too many redirects"),
+                6,
+            ),
+            (
+                vec![redirect(&format!("{CALLBACK}?state=another-login&code=c"))],
+                Error::Protocol("callback state mismatch"),
+                1,
+            ),
+        ];
+        for (replies, expected, requests) in cases {
+            let (client, endpoint, mut flow) = keycloak(DEFAULT_LOGIN_TIMEOUT, |_| replies);
+            assert_eq!(
+                driver::begin(&client, &Stub::default(), &Start::default(), &mut flow)
+                    .await
+                    .err(),
+                Some(expected)
+            );
+            assert_eq!(sent(&endpoint).len(), requests);
+            assert_eq!(
+                flow.ensure_active().err(),
+                Some(Error::Protocol("login flow failed"))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_factor_that_fails_ends_the_login() {
+        let refusing = Stub {
+            refuses_answers: true,
+            ..Stub::default()
+        };
+        let (client, endpoint, mut flow) = keycloak(DEFAULT_LOGIN_TIMEOUT, two_factor_login);
+        driver::begin(&client, &refusing, &Start::default(), &mut flow)
+            .await
+            .unwrap();
+        driver::advance(
+            &client,
+            &refusing,
+            &mut flow,
+            Answer::Username("alice".to_owned()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            driver::advance(
+                &client,
+                &refusing,
+                &mut flow,
+                Answer::Password("pw".to_owned())
+            )
+            .await
+            .err(),
+            Some(Error::Protocol("stub refused the answers"))
+        );
+        assert_eq!(sent(&endpoint).len(), 1);
+        assert!(!flow.is_active());
+
+        let silent = Stub {
+            asks_nothing: true,
+            ..Stub::default()
+        };
+        let (client, _, mut flow) = keycloak(DEFAULT_LOGIN_TIMEOUT, two_factor_login);
+        assert_eq!(
+            driver::begin(&client, &silent, &Start::default(), &mut flow)
+                .await
+                .err(),
+            Some(Error::Protocol("page asks no challenge"))
+        );
+        assert!(!flow.is_active());
+    }
+
+    #[tokio::test]
+    async fn a_page_no_built_in_factor_handles_is_unsupported() {
+        let (client, endpoint, _) = keycloak(DEFAULT_LOGIN_TIMEOUT, |_| vec![page(LOGIN_PAGE)]);
+        assert_eq!(
+            client.initiate_auth_flow(Start::default()).await.err(),
+            Some(Error::UnsupportedFactor)
+        );
+        assert_eq!(sent(&endpoint).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_abandoned_step_ends_the_login() {
+        let mut client = app_with(json!({}), Arc::new(Stalled));
+        client.metadata.authorization_endpoint =
+            Url::parse(&format!("{KEYCLOAK}/protocol/openid-connect/auth")).unwrap();
+        let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+        let stub = Stub::default();
+        let start = Start::default();
+        let begin = driver::begin(&client, &stub, &start, &mut flow);
+        assert!(tokio::time::timeout(Duration::from_millis(10), begin)
+            .await
+            .is_err());
+        assert_eq!(
+            flow.ensure_active().err(),
+            Some(Error::Protocol("login flow failed"))
         );
     }
 

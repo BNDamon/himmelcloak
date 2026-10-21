@@ -371,10 +371,16 @@ mod tests {
 
     use url::Url;
 
-    use super::{callback, Callback};
+    use super::{callback, Callback, Expect};
+    use crate::authenticator::{
+        CredentialDescriptor, UserVerification, WebAuthnAssertion, WebAuthnChallenge,
+    };
     use crate::error::{Error, Result};
     use crate::flow::fetch::{Redirect, RedirectKind};
-    use crate::flow::AuthFlow;
+    use crate::flow::{
+        Answer, AuthFlow, AuthMethod, Challenge, Field, OtpDevice, RequiredAction,
+        RequiredActionAnswer,
+    };
 
     const CALLBACK: &str = "http://127.0.0.1:8845/himmelcloak/callback";
 
@@ -534,5 +540,165 @@ mod tests {
             at_callback(&format!("code=c&state={state}"), &mut flow).err(),
             Some(Error::Expired)
         );
+    }
+
+    fn code(device: Option<&str>) -> Answer {
+        Answer::OneTimeCode {
+            code: "123456".to_owned(),
+            device: device.map(str::to_owned),
+        }
+    }
+
+    fn devices(ids: &[&str]) -> Challenge {
+        Challenge::OneTimeCode {
+            devices: ids
+                .iter()
+                .map(|id| OtpDevice::new((*id).to_owned(), "Phone".to_owned()))
+                .collect(),
+        }
+    }
+
+    fn webauthn(allowed: &[&[u8]]) -> Challenge {
+        Challenge::WebAuthn(WebAuthnChallenge {
+            rp_id: "keycloak.test".to_owned(),
+            challenge: vec![1, 2, 3],
+            allow_credentials: allowed
+                .iter()
+                .map(|id| CredentialDescriptor { id: id.to_vec() })
+                .collect(),
+            user_verification: UserVerification::Preferred,
+            origin: "https://keycloak.test:8443".to_owned(),
+        })
+    }
+
+    fn assertion(credential_id: &[u8]) -> Answer {
+        Answer::WebAuthn(WebAuthnAssertion {
+            authenticator_data: Vec::new(),
+            signature: Vec::new(),
+            credential_id: credential_id.to_vec(),
+            user_handle: None,
+        })
+    }
+
+    fn methods() -> Challenge {
+        Challenge::ChooseMethod {
+            methods: vec![AuthMethod::new(
+                "otp".to_owned(),
+                "Authenticator".to_owned(),
+            )],
+        }
+    }
+
+    fn update_password() -> Challenge {
+        let field = |name: &str| Field::new(name.to_owned(), name.to_owned(), true);
+        Challenge::RequiredAction(RequiredAction::new(
+            "UPDATE_PASSWORD".to_owned(),
+            None,
+            vec![field("password-new"), field("password-confirm")],
+        ))
+    }
+
+    fn filled(names: &[&str]) -> Answer {
+        Answer::RequiredAction(RequiredActionAnswer::new(
+            names
+                .iter()
+                .map(|name| ((*name).to_owned(), "new-secret".to_owned()))
+                .collect(),
+        ))
+    }
+
+    #[test]
+    fn every_answer_must_fit_its_challenge() {
+        let mismatch = Error::Protocol("answer does not match the challenge");
+        let wrong_device = Error::Protocol("device not offered by the page");
+        let wrong_fields = Error::Protocol("answer does not match the required action");
+        let cases = [
+            (
+                Challenge::Username,
+                Answer::Username("alice".to_owned()),
+                None,
+            ),
+            (Challenge::Password, Answer::Password("pw".to_owned()), None),
+            (
+                Challenge::RecoveryCode { index_hint: None },
+                Answer::RecoveryCode("recovery".to_owned()),
+                None,
+            ),
+            (
+                Challenge::Info {
+                    message: "Check your email".to_owned(),
+                },
+                Answer::Acknowledge,
+                None,
+            ),
+            (
+                Challenge::Password,
+                Answer::Acknowledge,
+                Some(mismatch.clone()),
+            ),
+            (
+                Challenge::Username,
+                Answer::Password("pw".to_owned()),
+                Some(mismatch.clone()),
+            ),
+            (devices(&[]), code(None), None),
+            (
+                devices(&[]),
+                code(Some("phone")),
+                Some(wrong_device.clone()),
+            ),
+            (devices(&["phone", "tablet"]), code(Some("tablet")), None),
+            (
+                devices(&["phone", "tablet"]),
+                code(Some("laptop")),
+                Some(wrong_device),
+            ),
+            (
+                devices(&["phone", "tablet"]),
+                code(None),
+                Some(mismatch.clone()),
+            ),
+            (webauthn(&[]), assertion(b"any-key"), None),
+            (webauthn(&[b"key"]), assertion(b"key"), None),
+            (
+                webauthn(&[b"key"]),
+                assertion(b"other-key"),
+                Some(Error::Protocol("credential not allowed")),
+            ),
+            (methods(), Answer::ChooseMethod("otp".to_owned()), None),
+            (
+                methods(),
+                Answer::ChooseMethod("sms".to_owned()),
+                Some(Error::Protocol("method not offered")),
+            ),
+            (
+                update_password(),
+                filled(&["password-confirm", "password-new"]),
+                None,
+            ),
+            (
+                update_password(),
+                filled(&["password-new"]),
+                Some(wrong_fields.clone()),
+            ),
+            (
+                update_password(),
+                filled(&["password-new", "password-new"]),
+                Some(wrong_fields.clone()),
+            ),
+            (
+                update_password(),
+                filled(&["password-new", "password-confirm", "username"]),
+                Some(wrong_fields),
+            ),
+            (update_password(), Answer::Acknowledge, Some(mismatch)),
+        ];
+        for (i, (challenge, answer, expected)) in cases.into_iter().enumerate() {
+            assert_eq!(
+                Expect::of(&challenge).check(&answer).err(),
+                expected,
+                "case {i}"
+            );
+        }
     }
 }
