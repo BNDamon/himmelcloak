@@ -25,7 +25,7 @@ use serde_json::Value;
 
 use crate::config::Config;
 use crate::error::{Error, Result};
-use crate::flow::factor::Builtin;
+use crate::flow::factor::{Builtin, Factors};
 use crate::flow::fetch::Redirect;
 use crate::flow::{driver, Answer, AuthFlow, AuthStep, Tokens, DEFAULT_LOGIN_TIMEOUT};
 use crate::sensitive_json::SensitiveClaims;
@@ -317,8 +317,16 @@ impl PublicClientApplication {
 
     /// Start a native login and return the flow with its first step.
     pub async fn initiate_auth_flow(&self, start: Start) -> Result<(AuthFlow, AuthStep)> {
+        self.initiate_with(&Builtin, &start).await
+    }
+
+    pub(crate) async fn initiate_with(
+        &self,
+        factors: &dyn Factors,
+        start: &Start,
+    ) -> Result<(AuthFlow, AuthStep)> {
         let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT)?;
-        let step = driver::begin(self, &Builtin, &start, &mut flow).await?;
+        let step = driver::begin(self, factors, start, &mut flow).await?;
         Ok((flow, step))
     }
 
@@ -1646,13 +1654,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_page_no_built_in_factor_handles_is_unsupported() {
-        let (client, endpoint, _) = keycloak(DEFAULT_LOGIN_TIMEOUT, |_| vec![page(LOGIN_PAGE)]);
+    async fn initiate_starts_a_login_only_where_a_factor_handles_the_page() {
+        let (client, endpoint, _) = keycloak(DEFAULT_LOGIN_TIMEOUT, |_| {
+            vec![page(LOGIN_PAGE), page(LOGIN_PAGE)]
+        });
+        let (mut flow, first) = client
+            .initiate_with(&Stub::default(), &Start::default())
+            .await
+            .unwrap();
+        assert!(matches!(challenge(Ok(first)), Challenge::Username));
+        assert!(flow.is_active());
         assert_eq!(
             client.initiate_auth_flow(Start::default()).await.err(),
             Some(Error::UnsupportedFactor)
         );
-        assert_eq!(sent(&endpoint).len(), 1);
+        assert_eq!(sent(&endpoint).len(), 2);
     }
 
     #[tokio::test]
