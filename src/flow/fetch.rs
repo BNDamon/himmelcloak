@@ -285,11 +285,15 @@ impl fmt::Debug for Redacted<'_> {
     }
 }
 
-/// Overwrite a URL's bytes before it is freed.
-pub(crate) fn scrub_url(url: &mut Url) {
-    if let Ok(blank) = Url::parse("data:,") {
-        let mut text: String = std::mem::replace(url, blank).into();
-        text.zeroize();
+pub(crate) use crate::transport::scrub_url;
+
+/// Scrubs the URL it holds on every way out of a request, since it can carry the login's
+/// `state`, `nonce`, or session code.
+struct Scrubbed(Url);
+
+impl Drop for Scrubbed {
+    fn drop(&mut self) {
+        scrub_url(&mut self.0);
     }
 }
 
@@ -330,10 +334,11 @@ async fn send(
         return Err(Error::Protocol("page URL must use HTTPS"));
     }
     request.cookies = jar.lines_for(&request.url);
-    let url = request.url.clone();
+    let requested = Scrubbed(request.url.clone());
+    let url = &requested.0;
     let mut response = transport.send(request).await?;
     // Keep cookies from redirects too: Keycloak sets its session cookies on the 302 after login.
-    jar.replace(&url, &response.cookies);
+    jar.replace(url, &response.cookies);
     if let Some(kind) = RedirectKind::from_status(response.status) {
         let location = response
             .header("Location")
@@ -351,7 +356,7 @@ async fn send(
     match response.status {
         status @ 300..=399 => Err(Error::HttpStatus(status)),
         status => Ok(Fetched::Page(Page {
-            url,
+            url: url.clone(),
             status,
             // Move the buffer instead of copying it, so no unscrubbed copy of the page exists.
             body: std::mem::take(&mut response.body),

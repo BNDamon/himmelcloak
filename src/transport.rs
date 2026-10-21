@@ -93,9 +93,18 @@ impl Request {
 
 impl Drop for Request {
     fn drop(&mut self) {
+        scrub_url(&mut self.url);
         self.body.zeroize();
         self.headers.zeroize();
         self.cookies.zeroize();
+    }
+}
+
+/// Overwrite a URL's bytes before it is freed.
+pub(crate) fn scrub_url(url: &mut Url) {
+    if let Ok(blank) = Url::parse("data:,") {
+        let mut text: String = std::mem::replace(url, blank).into();
+        text.zeroize();
     }
 }
 
