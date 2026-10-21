@@ -102,7 +102,7 @@ async fn first_page(
     flow.client = app.login_client();
     flow.login_hint = start.login_hint.clone();
     let fetched = fetch::get(app.transport(), &mut flow.jar, url).await?;
-    resolve(app, factors, flow, fetched).await
+    resolve(app, factors, flow, fetched, false).await
 }
 
 async fn answer_page(
@@ -128,7 +128,7 @@ async fn answer_page(
         return Ok(AuthStep::Challenge(next));
     }
     let fetched = post(app, factors, &mut flow.jar, pending).await?;
-    resolve(app, factors, flow, fetched).await
+    resolve(app, factors, flow, fetched, true).await
 }
 
 /// Post the page's form. Taking the page by value wipes its answers once the form is sent,
@@ -152,18 +152,20 @@ async fn post(
 
 /// Turn Keycloak's response into the next step: a page's first challenge, or completion at the
 /// callback. Keycloak's own same-origin redirects are followed; any other redirect is refused.
+/// `posted` says `fetched` answers a form post rather than a GET.
 async fn resolve(
     app: &PublicClientApplication,
     factors: &dyn Factors,
     flow: &mut AuthFlow,
     mut fetched: Fetched,
+    mut posted: bool,
 ) -> Result<AuthStep> {
     let mut followed = 0;
     loop {
+        // The response can land after the time limit; never act on one past it.
+        flow.ensure_active()?;
         let redirect = match fetched {
             Fetched::Page(page) => {
-                // The response can land after the time limit; never ask for more past it.
-                flow.ensure_active()?;
                 if page.status != 200 {
                     return Err(Error::HttpStatus(page.status));
                 }
@@ -171,17 +173,22 @@ async fn resolve(
             }
             Fetched::Redirect(redirect) => redirect,
         };
+        // A 307 or 308 straight after a form post would repeat the post, even to the callback;
+        // after a GET it is a GET.
+        if posted && redirect.kind.repeats_request() {
+            return Err(Error::Protocol("unexpected redirect"));
+        }
         if let Some(complete) = app.complete_at_callback(&redirect, flow).await? {
             return Ok(complete);
         }
-        // A 307 or 308 would repeat the form post to wherever it points.
-        if !redirect.same_origin || redirect.kind.repeats_request() {
+        if !redirect.same_origin {
             return Err(Error::Protocol("unexpected redirect"));
         }
         if followed == MAX_REDIRECTS {
             return Err(Error::Protocol("too many redirects"));
         }
         followed += 1;
+        posted = false;
         fetched = fetch::get(app.transport(), &mut flow.jar, redirect.location.clone()).await?;
     }
 }

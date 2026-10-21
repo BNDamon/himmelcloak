@@ -392,7 +392,7 @@ mod tests {
     use crate::flow::Tokens;
     use crate::flow::{Answer, AuthFlow, AuthStep, Challenge, OtpDevice, DEFAULT_LOGIN_TIMEOUT};
     use crate::token::Metadata;
-    use crate::transport::{HttpTransport, Request, Response};
+    use crate::transport::{HttpTransport, Method, Request, Response};
 
     struct RecordedTransport(Mutex<VecDeque<Response>>);
 
@@ -1482,9 +1482,7 @@ mod tests {
     async fn keycloak_responses_the_login_cannot_follow_end_it() {
         let elsewhere = "https://elsewhere.test/realms/himmelcloak-test/login";
         let hop = format!("{KEYCLOAK}/login-actions/required-action");
-        let mut repeated = redirect(&hop).unwrap();
-        repeated.status = 307;
-        let cases: [(Vec<Result<Response>>, Error, usize); 6] = [
+        let cases: [(Vec<Result<Response>>, Error, usize); 5] = [
             (
                 vec![page("<html><body>Something went wrong</body></html>")],
                 Error::Protocol("unknown login page"),
@@ -1493,11 +1491,6 @@ mod tests {
             (vec![reply(500, LOGIN_PAGE)], Error::HttpStatus(500), 1),
             (
                 vec![redirect(elsewhere)],
-                Error::Protocol("unexpected redirect"),
-                1,
-            ),
-            (
-                vec![Ok(repeated)],
                 Error::Protocol("unexpected redirect"),
                 1,
             ),
@@ -1528,6 +1521,78 @@ mod tests {
         }
     }
 
+    fn repeating(location: &str) -> Result<Response> {
+        let mut response = redirect(location)?;
+        response.status = 307;
+        Ok(response)
+    }
+
+    #[tokio::test]
+    async fn a_repeating_redirect_is_followed_after_a_get_but_not_after_a_post() {
+        let hop = format!("{KEYCLOAK}/login-actions/authenticate?execution=next");
+        let (client, endpoint, mut flow) = keycloak(DEFAULT_LOGIN_TIMEOUT, |_| {
+            vec![repeating(&hop), page(LOGIN_PAGE), repeating(&hop)]
+        });
+        let stub = Stub::default();
+        let first = driver::begin(&client, &stub, &Start::default(), &mut flow).await;
+        assert!(matches!(challenge(first), Challenge::Username));
+        driver::advance(
+            &client,
+            &stub,
+            &mut flow,
+            Answer::Username("alice".to_owned()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            driver::advance(&client, &stub, &mut flow, Answer::Password("pw".to_owned()))
+                .await
+                .err(),
+            Some(Error::Protocol("unexpected redirect"))
+        );
+        assert_eq!(sent(&endpoint).len(), 3);
+        assert!(!flow.is_active());
+    }
+
+    #[tokio::test]
+    async fn a_repeating_redirect_after_a_post_is_refused_even_to_the_callback() {
+        for status in [307, 308] {
+            let (client, endpoint, mut flow) = keycloak(DEFAULT_LOGIN_TIMEOUT, |flow| {
+                let mut back = repeating(&callback_for(flow)).unwrap();
+                back.status = status;
+                let fixture = nonce_fixture();
+                vec![
+                    page(LOGIN_PAGE),
+                    Ok(back),
+                    reply(200, &token_response(&fixture["token"])),
+                ]
+            });
+            let stub = Stub::default();
+            let first = driver::begin(&client, &stub, &Start::default(), &mut flow).await;
+            assert!(matches!(challenge(first), Challenge::Username));
+            driver::advance(
+                &client,
+                &stub,
+                &mut flow,
+                Answer::Username("alice".to_owned()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                driver::advance(&client, &stub, &mut flow, Answer::Password("pw".to_owned()))
+                    .await
+                    .err(),
+                Some(Error::Protocol("unexpected redirect")),
+                "{status}"
+            );
+            assert_eq!(sent(&endpoint).len(), 2, "{status}");
+            assert_eq!(
+                flow.ensure_active().err(),
+                Some(Error::Protocol("login flow failed"))
+            );
+        }
+    }
+
     /// Answers after `delay`, like a slow Keycloak.
     struct Slow(Duration, Arc<TokenEndpoint>);
 
@@ -1542,6 +1607,62 @@ mod tests {
                 tokio::time::sleep(delay).await;
                 reply.await
             })
+        }
+    }
+
+    /// Answers form posts after `delay`, like a Keycloak slow to check a password.
+    struct SlowPosts(Duration, Arc<TokenEndpoint>);
+
+    impl HttpTransport for SlowPosts {
+        fn send(
+            &self,
+            request: Request,
+        ) -> Pin<Box<dyn Future<Output = Result<Response>> + Send + '_>> {
+            let delay = match request.method {
+                Method::Post => self.0,
+                Method::Get => Duration::ZERO,
+            };
+            let reply = self.1.send(request);
+            Box::pin(async move {
+                tokio::time::sleep(delay).await;
+                reply.await
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_repeating_redirect_that_arrives_after_the_time_limit_reports_expiry() {
+        for status in [307, 308] {
+            let (client, endpoint, mut flow) = keycloak(Duration::from_millis(100), |flow| {
+                let mut back = repeating(&callback_for(flow)).unwrap();
+                back.status = status;
+                vec![page(LOGIN_PAGE), Ok(back)]
+            });
+            let mut slow = app_with(
+                nonce_fixture()["jwk"].clone(),
+                Arc::new(SlowPosts(Duration::from_millis(200), endpoint.clone())),
+            );
+            slow.metadata = client.metadata.clone();
+            let stub = Stub::default();
+            let first = driver::begin(&slow, &stub, &Start::default(), &mut flow).await;
+            assert!(matches!(challenge(first), Challenge::Username));
+            driver::advance(
+                &slow,
+                &stub,
+                &mut flow,
+                Answer::Username("alice".to_owned()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                driver::advance(&slow, &stub, &mut flow, Answer::Password("pw".to_owned()))
+                    .await
+                    .err(),
+                Some(Error::Expired),
+                "{status}"
+            );
+            assert_eq!(sent(&endpoint).len(), 2, "{status}");
+            assert_eq!(flow.ensure_active().err(), Some(Error::Expired));
         }
     }
 
