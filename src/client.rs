@@ -25,6 +25,7 @@ use serde_json::Value;
 
 use crate::config::Config;
 use crate::error::{Error, Result};
+use crate::flow::fetch::Redirect;
 use crate::flow::{driver, Answer, AuthFlow, AuthStep, Tokens};
 use crate::sensitive_json::SensitiveClaims;
 use crate::standard;
@@ -268,6 +269,28 @@ impl PublicClientApplication {
         }
     }
 
+    /// Complete the login when `redirect` is Keycloak's redirect to the registered callback.
+    /// Any other redirect returns `Ok(None)` and leaves the login running. A refused callback
+    /// ends the login, so it cannot be retried with another code.
+    pub(crate) async fn complete_at_callback(
+        &self,
+        redirect: &Redirect,
+        flow: &mut AuthFlow,
+    ) -> Result<Option<AuthStep>> {
+        // An ended login follows no redirect at all, not only the callback.
+        flow.ensure_active()?;
+        let callback = match driver::callback(redirect, &self.config.redirect_uri, flow) {
+            Ok(Some(callback)) => callback,
+            Ok(None) => return Ok(None),
+            Err(error) => {
+                flow.cancel();
+                return Err(error);
+            }
+        };
+        let tokens = self.exchange_code(callback, flow).await?;
+        Ok(Some(AuthStep::Complete(tokens)))
+    }
+
     /// Authorization-code grant for a public client (RFC 6749 section 4.1.3, RFC 7636 section 4.5).
     async fn redeem_code(&self, code: &str, verifier: &str, nonce: &str) -> Result<Tokens> {
         let mut tokens = standard::acquire(
@@ -336,8 +359,9 @@ mod tests {
     use crate::config::Config;
     use crate::error::{Error, Result};
     use crate::flow::driver::Callback;
+    use crate::flow::fetch::{Redirect, RedirectKind};
     use crate::flow::Tokens;
-    use crate::flow::{Answer, AuthFlow, DEFAULT_LOGIN_TIMEOUT};
+    use crate::flow::{Answer, AuthFlow, AuthStep, DEFAULT_LOGIN_TIMEOUT};
     use crate::token::Metadata;
     use crate::transport::{HttpTransport, Request, Response};
 
@@ -510,6 +534,13 @@ mod tests {
                 reply(
                     400,
                     r#"{"error":"invalid_grant","error_description":"Code not valid"}"#,
+                ),
+                Error::AuthenticationRejected,
+            ),
+            (
+                reply(
+                    400,
+                    r#"{"error":"invalid_grant","error_description":"Code is expired"}"#,
                 ),
                 Error::AuthenticationRejected,
             ),
@@ -735,6 +766,126 @@ mod tests {
             assert_eq!(flow.ensure_active().err(), Some(Error::Cancelled));
             assert!(flow.pkce_verifier().is_empty() && flow.nonce().is_empty());
         }
+    }
+
+    const CALLBACK: &str = "http://127.0.0.1:8845/himmelcloak/callback";
+
+    fn redirect_to(location: &str) -> Redirect {
+        Redirect {
+            location: Url::parse(location).unwrap(),
+            same_origin: false,
+            kind: RedirectKind::Found,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_callback_completes_the_login_once() {
+        let fixture = nonce_fixture();
+        let (client, endpoint) = token_app(
+            fixture["jwk"].clone(),
+            vec![reply(200, &token_response(&fixture["token"]))],
+        );
+        let mut flow = AuthFlow::with_nonce(DEFAULT_LOGIN_TIMEOUT, FIXTURE_NONCE).unwrap();
+        let redirect = redirect_to(&format!(
+            "{CALLBACK}?code=synthetic-code&state={}",
+            flow.oauth_state()
+        ));
+        let Some(AuthStep::Complete(tokens)) = client
+            .complete_at_callback(&redirect, &mut flow)
+            .await
+            .unwrap()
+        else {
+            panic!("the callback must complete the login");
+        };
+        assert_eq!(tokens.verified_subject.as_deref(), Some("alice"));
+        let fields: HashMap<_, _> = sent_fields(&endpoint).into_iter().collect();
+        assert_eq!(fields["code"], "synthetic-code");
+
+        // A replayed callback redeems nothing: the login it belonged to is over.
+        assert_eq!(
+            client
+                .complete_at_callback(&redirect, &mut flow)
+                .await
+                .err(),
+            Some(Error::Protocol("login flow already finished"))
+        );
+        assert_eq!(endpoint.sent.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn other_redirects_leave_an_active_login_running() {
+        let (client, endpoint) = token_app(json!({}), vec![]);
+        let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+        let redirect =
+            redirect_to("https://example.test/realms/test/login-actions/required-action");
+        assert!(client
+            .complete_at_callback(&redirect, &mut flow)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(flow.is_active());
+
+        let mut cancelled = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+        cancelled.cancel();
+        let mut expired = AuthFlow::new(Duration::ZERO).unwrap();
+        for (ended, expected) in [
+            (&mut cancelled, Error::Cancelled),
+            (&mut expired, Error::Expired),
+        ] {
+            assert_eq!(
+                client.complete_at_callback(&redirect, ended).await.err(),
+                Some(expected)
+            );
+        }
+        assert!(endpoint.sent.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_refused_callback_ends_the_login_without_redeeming() {
+        let cases = [
+            (
+                "code=c&state=another-login",
+                Error::Protocol("callback state mismatch"),
+            ),
+            (
+                "error=access_denied&state={state}",
+                Error::AuthenticationRejected,
+            ),
+            ("state={state}", Error::Protocol("callback without code")),
+        ];
+        for (query, expected) in cases {
+            let (client, endpoint) = token_app(json!({}), vec![]);
+            let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+            let query = query.replace("{state}", flow.oauth_state());
+            let redirect = redirect_to(&format!("{CALLBACK}?{query}"));
+            assert_eq!(
+                client
+                    .complete_at_callback(&redirect, &mut flow)
+                    .await
+                    .err(),
+                Some(expected),
+                "{query}"
+            );
+            assert_eq!(flow.ensure_active().err(), Some(Error::Cancelled));
+            assert!(flow.pkce_verifier().is_empty() && flow.nonce().is_empty());
+            assert!(endpoint.sent.lock().unwrap().is_empty());
+        }
+
+        // A code that arrives after the login ran out of time is never redeemed.
+        let (client, endpoint) = token_app(json!({}), vec![]);
+        let mut expired = AuthFlow::new(Duration::ZERO).unwrap();
+        let redirect = redirect_to(&format!(
+            "{CALLBACK}?code=c&state={}",
+            expired.oauth_state()
+        ));
+        assert_eq!(
+            client
+                .complete_at_callback(&redirect, &mut expired)
+                .await
+                .err(),
+            Some(Error::Expired)
+        );
+        assert!(endpoint.sent.lock().unwrap().is_empty());
     }
 
     #[test]
