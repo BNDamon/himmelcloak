@@ -465,7 +465,7 @@ mod tests {
         })
     }
 
-    const FIXTURE_NONCE: &str = "fixture-login-nonce";
+    const FIXTURE_NONCE: &str = "fixture-login-nonce-01";
 
     fn nonce_fixture() -> Value {
         serde_json::from_str(include_str!("../tests/fixtures/rs256_id_token_nonce.json")).unwrap()
