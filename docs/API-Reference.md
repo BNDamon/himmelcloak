@@ -52,8 +52,12 @@ the user types (`Input::Hidden`, `Input::Visible`, or `Input::None`). A required
 `Input::Form`: each of its `fields` says whether its input is secret, and the answer gives one value per field. Secret answers are wiped from
 memory when dropped. `AuthFlow::cancel()` ends a login, and a login expires after
 `DEFAULT_LOGIN_TIMEOUT` (30 minutes, Keycloak's default login timeout); after either, every step returns `Cancelled` or `Expired`.
-`initiate_auth_flow` and `continue_auth_flow` are still under construction and currently return
-`NotImplemented` for an active login.
+An answer that does not fit the waiting challenge (the wrong kind, a device or method the page did
+not offer, a WebAuthn credential outside the allow-list, or required-action fields that do not
+match exactly) is refused with a protocol error before anything is sent. Any error ends the login,
+and later steps then fail with `Protocol("login flow failed")`. The loop is in place, but no factor
+handlers are built yet, so `initiate_auth_flow` currently returns `UnsupportedFactor` at Keycloak's
+login page.
 
 These types replace the earlier placeholders, which had no callers: `Challenge::Totp` and
 `Answer::Totp` became `OneTimeCode`, the SMS and email variants were removed until those

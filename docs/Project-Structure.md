@@ -14,7 +14,7 @@
 | `src/crypto.rs` | wolfCrypt hashing, randomness, and signature verification |
 | `src/token.rs` | OIDC metadata, JWKS, and ID-token checks |
 | `src/standard.rs` | Token, revocation, and userinfo requests |
-| `src/flow` | Resumable native login state and page driver |
+| `src/flow` | Resumable native login state, page driver, and the factor handler seam |
 | `src/authn` | Factor-specific handlers |
 | `tests/` | Integration tests and token fixtures |
 | `examples/` | Small runnable examples |
@@ -23,6 +23,7 @@
 | `docs` | Project documentation and wiki source |
 
 The public client and flow types are owned by the core. Factor implementations attach through
-typed challenges and answers; they do not redefine the state machine.
+typed challenges and answers and register a page handler in `src/flow/factor.rs`; they do not
+redefine the state machine.
 The `himmelcloak` crate exposes a Rust API. The PAM and NSS crates build the `cdylib`
 modules that will export the C entry points Linux-PAM and glibc load; there are no C headers.

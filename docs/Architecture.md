@@ -27,10 +27,10 @@ optional Keycloak configuration, so it cannot serve as the only login path.
 Authorization-request construction is in place. Each login generates a
 wolfCrypt-backed PKCE verifier and S256 challenge plus independent state and
 nonce values. The flow retains those secrets, validates the returned state,
-and wipes them when it ends. The remaining driver work will fetch and classify
-the returned challenge, accept a typed answer, and hand the final code to the
-code exchange. The caller owns the user conversation; the library owns protocol
-state and response validation.
+and wipes them when it ends. The driver fetches and classifies each returned
+page, accepts a typed answer, and hands the final code to the code exchange.
+The caller owns the user conversation; the library owns protocol state and
+response validation.
 
 The challenge/answer contract in `src/flow/mod.rs` fixes that conversation.
 Each Keycloak login page yields a `Challenge` (username, password, one-time
@@ -43,12 +43,26 @@ browser-only setup, such as configuring an authenticator app, are unsupported. E
 `AuthStep` is another challenge, `Complete` with tokens, or `Failed` with
 Keycloak's message. `Challenge::input()` tells the caller whether to hide or
 show what the user types. An `AuthFlow` is single-use: `cancel()`, a
-30-minute time limit, or completion ends it, wipes its cookies and request
-secrets, and makes every later step fail with `Cancelled`, `Expired`, or a
-protocol error. The driver checks this before every step. Only
-`initiate_auth_flow` creates a flow.
-`initiate_auth_flow` and `continue_auth_flow` otherwise still return
-`NotImplemented` until the page driver walks a whole login.
+30-minute time limit, completion, or a failed check ends it, wipes its cookies,
+request secrets, and waiting page, and makes every later step fail with
+`Cancelled`, `Expired`, or a protocol error (`login flow failed` after a failed
+check). The driver checks this before every step. Only `initiate_auth_flow`
+creates a flow.
+
+The driver (`src/flow/driver.rs`) walks the login. It requests the
+authorization URL, hands each recognised page to the factor handler that owns
+it (`src/flow/factor.rs`), and returns that handler's challenges one at a time;
+the page's form is posted once all are answered. Each answer must fit the
+waiting challenge before anything is sent: the matching kind, an OTP device or
+method the page offered, a WebAuthn credential from the allow-list, and exactly
+the required action's fields. Keycloak's own same-origin redirects are
+followed, at most five in a row. A redirect to another site, or one that would
+repeat a form post (307 or 308), is refused, and the redirect to the registered
+callback completes the login through the code exchange. Any refusal, error, or
+step dropped mid-request ends the login as failed. No factor handler is
+registered yet, so a real login stops at its first page with
+`UnsupportedFactor`; the password and one-time-code handlers plug in as their
+slices land.
 
 Page fetching (`src/flow/fetch.rs`) is in place beneath the driver. Each
 `AuthFlow` owns its own cookie jar, which keeps libcurl's cookie lines per exact
@@ -84,7 +98,7 @@ to the registered callback is redeemed at once and the login becomes
 `AuthStep::Complete`, while any other redirect is left for the driver. A refused
 callback (wrong `state`, `access_denied`, or no code) ends the login without
 redeeming anything, and replaying a callback fails because its login has ended.
-Both stay crate-internal until the driver walks a whole login.
+The driver calls it for every redirect it receives.
 
 For WebAuthn, the intended adapter builds client data for Keycloak's actual
 origin and sends the signing request to a caller-provided authenticator. The
@@ -147,7 +161,7 @@ Docker. See [Testing](Testing.md).
 
 | Method | Intended mechanism | Current status |
 | --- | --- | --- |
-| Password | Direct Access Grant; later native flow | Direct grant implemented; native login form and code exchange live-tested with direct grants disabled, crate-internal until the driver is connected |
+| Password | Direct Access Grant; later native flow | Direct grant implemented; native flow driver in place, password page handler pending; login form and code exchange live-tested with direct grants disabled |
 | TOTP / HOTP | wolfCrypt HMAC generation and verification; Direct Access Grant; later native flow | SHA-1, SHA-256, and SHA-512 generation and verification implemented; Keycloak credential persistence and live TOTP fixture pending |
 | WebAuthn / passkeys | Native flow and authenticator adapter | Virtual adapter and seeded live assertion fixture implemented; public native flow pending |
 | SMS / email OTP | Native flow | Planned |
@@ -193,7 +207,8 @@ components. See [Licensing](Licensing.md) for details.
 Every completed method needs a live test against an unmodified Keycloak
 container. CI resolves the latest stable release and `nightly` image digests,
 then runs the same integration suite against both.
-Unit tests cover token validation and transport boundaries without a server.
+Unit tests cover token validation, transport boundaries, and the
+challenge/answer contract without a server.
 The live suite covers a password authorization-code login from the login form
 through the code exchange to verified tokens, with direct grants disabled, and
 proves Keycloak refuses a reused or stale code. It will grow to cover WebAuthn

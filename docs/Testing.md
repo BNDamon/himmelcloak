@@ -46,6 +46,14 @@ both refs and commits in `/opt/himmelcloak-native/.himmelcloak-refs`.
 Each new login factor must add a live scenario before its feature is treated as
 complete.
 
+The challenge/answer contract is unit-tested without a server in `src/client.rs`
+and `src/flow/driver.rs`. Stub factor handlers drive recorded Keycloak pages
+from `tests/fixtures/keycloak` through a username, password, and one-time-code
+login to `Complete` with verified tokens. Every rejection path ends the login
+before anything more is sent: a wrong answer at each step, an ended or idle
+login, a time limit reached between challenges, pages and redirects the login
+cannot follow, a failing handler, and a step abandoned mid-request.
+
 The exact Cargo versions remain in `Cargo.lock` for reproducible builds.
 Dependabot checks Cargo and GitHub Actions updates weekly, while the resolver
 workflows expose new native and Keycloak releases immediately.
