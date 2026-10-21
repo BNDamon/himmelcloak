@@ -25,14 +25,15 @@
 //! and the live suite runs them with `cargo test --lib --test live_keycloak -- --ignored`. They
 //! need `KEYCLOAK_URL` and `KEYCLOAK_CA`, like `tests/live_keycloak.rs`.
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::client::{PublicClientApplication, Start};
 use crate::config::Config;
 use crate::error::Error;
 use crate::flow::classify::PageKind;
-use crate::flow::fetch::{self, Fetched};
+use crate::flow::fetch::{self, Fetched, Redirect};
 use crate::flow::form::{extract, Form};
-use crate::flow::{driver, AuthFlow, DEFAULT_LOGIN_TIMEOUT};
+use crate::flow::{driver, AuthFlow, AuthStep, DEFAULT_LOGIN_TIMEOUT};
 use crate::transport::CurlTransport;
 
 const PASSWORD: &str = "correct-horse-battery-staple";
@@ -77,16 +78,6 @@ async fn live_password_form_reaches_the_callback_and_a_wrong_password_is_rejecte
         .await
         .unwrap();
     let transport = CurlTransport::new(config.ca_bundle.clone(), config.timeout).unwrap();
-
-    // The password grant must really be off for this client, or the scenario proves nothing.
-    #[cfg(feature = "password")]
-    {
-        trace("confirm the password grant is refused for the browser-only client");
-        assert!(app
-            .acquire_token_by_password("alice", PASSWORD, None)
-            .await
-            .is_err());
-    }
 
     trace("submit alice's login form with the correct password");
     let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
@@ -176,4 +167,114 @@ async fn live_code_exchange_returns_verified_tokens_and_a_wrong_code_is_rejected
         Some(Error::AuthenticationRejected)
     );
     trace("Keycloak rejected the wrong code");
+}
+
+/// Log alice in with `flow` and return Keycloak's redirect to the callback.
+async fn log_in(
+    app: &PublicClientApplication,
+    transport: &CurlTransport,
+    flow: &mut AuthFlow,
+) -> Redirect {
+    let form = login_form(app, transport, flow).await;
+    let fetched = form
+        .submit(
+            transport,
+            &mut flow.jar,
+            &[("username", "alice"), ("password", PASSWORD)],
+        )
+        .await
+        .unwrap();
+    let Fetched::Redirect(redirect) = fetched else {
+        panic!("a correct password must redirect to the callback");
+    };
+    redirect
+}
+
+#[tokio::test]
+#[ignore = "requires a live Keycloak server and test CA"]
+async fn live_login_completes_without_direct_grants_and_a_replayed_code_is_rejected() {
+    let config = config();
+    let app = PublicClientApplication::with_config(config.clone())
+        .await
+        .unwrap();
+    let transport = CurlTransport::new(config.ca_bundle.clone(), config.timeout).unwrap();
+
+    // The password grant must really be off for this client, or the scenario proves nothing.
+    #[cfg(feature = "password")]
+    {
+        trace("confirm the password grant is refused for the browser-only client");
+        assert_eq!(
+            app.acquire_token_by_password("alice", PASSWORD, None)
+                .await
+                .err(),
+            Some(Error::InvalidConfiguration(
+                "Keycloak rejected the client or requested grant"
+            ))
+        );
+    }
+
+    trace("log alice in through the authorization-code flow");
+    let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+    let redirect = log_in(&app, &transport, &mut flow).await;
+    // Replay the code exactly as this login would send it, so only the reuse can fail.
+    let mut replay = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+    replay.pkce_verifier = flow.pkce_verifier.clone();
+    replay.nonce = flow.nonce.clone();
+    let code = driver::callback(&redirect, &config.redirect_uri, &mut flow)
+        .unwrap()
+        .expect("the registered callback")
+        .code
+        .clone();
+    let Some(AuthStep::Complete(tokens)) = app
+        .complete_at_callback(&redirect, &mut flow)
+        .await
+        .unwrap()
+    else {
+        panic!("the callback must complete the login");
+    };
+    assert!(tokens
+        .verified_subject
+        .as_deref()
+        .is_some_and(|subject| !subject.is_empty()));
+    assert_eq!(
+        tokens.verified_issuer.as_deref(),
+        Some(config.issuer().unwrap().as_str())
+    );
+    assert!(!flow.is_active());
+    trace("the login completed with verified tokens");
+
+    trace("redeem the same code again with the login's verifier and nonce");
+    assert_eq!(
+        app.exchange_code(driver::Callback { code }, &mut replay)
+            .await
+            .err(),
+        Some(Error::AuthenticationRejected)
+    );
+    // Reuse also revokes what the code first issued (RFC 6749 section 4.1.2).
+    assert_eq!(
+        app.refresh_tokens(&tokens).await.err(),
+        Some(Error::AuthenticationRejected)
+    );
+    trace("Keycloak refused the reused code and revoked its session");
+}
+
+#[tokio::test]
+#[ignore = "requires a live Keycloak server and test CA"]
+async fn live_code_held_past_its_lifespan_is_rejected() {
+    let config = config();
+    let app = PublicClientApplication::with_config(config.clone())
+        .await
+        .unwrap();
+    let transport = CurlTransport::new(config.ca_bundle.clone(), config.timeout).unwrap();
+
+    trace("log alice in and hold the code past the test realm's 10 s code lifespan");
+    let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+    let redirect = log_in(&app, &transport, &mut flow).await;
+    tokio::time::sleep(Duration::from_secs(12)).await;
+    assert_eq!(
+        app.complete_at_callback(&redirect, &mut flow).await.err(),
+        Some(Error::AuthenticationRejected)
+    );
+    assert!(!flow.is_active());
+    trace("Keycloak refused the stale code");
 }

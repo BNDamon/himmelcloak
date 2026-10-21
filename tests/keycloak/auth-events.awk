@@ -16,7 +16,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Print only the Keycloak login event fields needed for the test trace.
+# Print only the Keycloak login and code exchange event fields needed for the test trace.
 # Session and token identifiers from the raw server log are omitted.
 function value(line, key, parts, quoted) {
     split(line, parts, key "=\"")
@@ -27,7 +27,7 @@ function value(line, key, parts, quoted) {
     return quoted[1]
 }
 
-/type="LOGIN(_ERROR)?"/ {
+/type="(LOGIN|CODE_TO_TOKEN)(_ERROR)?"/ {
     printf "[keycloak server] %s client=%s user=%s grant=%s", \
         value($0, "type"), value($0, "clientId"), \
         value($0, "username"), value($0, "grant_type")
@@ -41,6 +41,6 @@ function value(line, key, parts, quoted) {
 
 END {
     if (!seen) {
-        print "(no LOGIN events appeared in Keycloak logs)"
+        print "(no LOGIN or CODE_TO_TOKEN events appeared in Keycloak logs)"
     }
 }
