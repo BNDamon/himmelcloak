@@ -30,7 +30,9 @@ client, then completes the login at the callback, so it proves the browser-free
 flow works without the password grant. It then redeems the same code again with
 the login's own verifier and nonce, which Keycloak refuses and answers by
 revoking the session the code created. A separate scenario holds a code past
-its lifespan and expects it refused. The test realm sets `accessCodeLifespan`
+its lifespan and expects it refused. A driver scenario walks alice's login
+through the login driver with a stand-in password handler to `Complete`, and a
+wrong password brings the login page back as a new `Username` challenge. The test realm sets `accessCodeLifespan`
 to 10 seconds so that scenario waits 12 seconds instead of over a minute; this
 only shortens how long a code can be redeemed, in the test realm only, and real
 deployments keep their own Keycloak setting.
