@@ -28,6 +28,8 @@ pub(crate) mod fetch;
 pub(crate) mod form;
 #[cfg(test)]
 mod live;
+#[cfg(all(test, feature = "webauthn-virtual"))]
+mod live_webauthn;
 
 use std::time::{Duration, Instant};
 

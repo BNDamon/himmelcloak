@@ -45,7 +45,7 @@ fi
 started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 result=0
 "${compose[@]}" run --rm -e HIMMELCLOAK_TEST_VERBOSE=1 tester \
-    cargo test --locked --lib --test live_keycloak -- --ignored --nocapture || result=$?
+    cargo test --locked --features webauthn-virtual --lib --test live_keycloak -- --ignored --nocapture || result=$?
 
 echo 'Keycloak server authentication events:'
 "${compose[@]}" logs --no-color --since "$started" keycloak \
