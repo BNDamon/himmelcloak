@@ -17,9 +17,15 @@ CI enables the same client trace and server event output for each live run.
 
 The live tests are ignored by a plain `cargo test` and require `KEYCLOAK_URL`
 and `KEYCLOAK_CA`; the Compose tester sets both and runs them with `--ignored`.
+`browser_free_password_login` in `tests/live_keycloak.rs` drives a whole login
+through the public API (`initiate_auth_flow` and `continue_auth_flow`) on the
+realm's `himmelcloak-browser-only` client: Keycloak first refuses the password
+grant for it, then alice signs in by answering username and password, signs in
+again with a login hint that skips the username, and a wrong password ends the
+login as `Failed` with Keycloak's message.
 The suite runs `cargo test --features webauthn-virtual --lib --test live_keycloak -- --ignored`, so it also
-runs the library's live scenarios in `src/flow/live.rs`. Those cover flow pieces
-the public API cannot reach until `initiate_auth_flow` drives a whole login, such
+runs the library's live scenarios in `src/flow/live.rs`. Those cover the pieces
+underneath the public API, such
 as submitting the login form: a correct password reaches the registered callback
 with a code, and a wrong one returns the login page. The code exchange scenario
 redeems that code for tokens that pass the ID token checks, and a code Keycloak
@@ -30,9 +36,7 @@ client, then completes the login at the callback, so it proves the browser-free
 flow works without the password grant. It then redeems the same code again with
 the login's own verifier and nonce, which Keycloak refuses and answers by
 revoking the session the code created. A separate scenario holds a code past
-its lifespan and expects it refused. A driver scenario walks alice's login
-through the login driver with a stand-in password handler to `Complete`, and a
-wrong password brings the login page back as a new `Username` challenge. The test realm sets `accessCodeLifespan`
+its lifespan and expects it refused. The test realm sets `accessCodeLifespan`
 to 10 seconds so that scenario waits 12 seconds instead of over a minute; this
 only shortens how long a code can be redeemed, in the test realm only, and real
 deployments keep their own Keycloak setting.
