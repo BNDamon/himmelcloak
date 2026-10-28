@@ -310,7 +310,7 @@ mod tests {
     fn login_forms_keep_keycloak_session_values() {
         for html in [BASE_LOGIN, V2_LOGIN] {
             let (kind, form) = extract(&page(html)).unwrap();
-            assert!(matches!(kind, PageKind::UsernamePassword));
+            assert!(matches!(kind, PageKind::UsernamePassword { .. }));
             assert_eq!(form.action.as_str().split('?').next(), Some(ACTION));
             let query: Vec<(String, String)> = form.action.query_pairs().into_owned().collect();
             let expected = [

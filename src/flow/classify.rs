@@ -51,12 +51,23 @@ const OTP_FIELDS: &[&str] = &["otp", "selectedCredentialId", "login"];
 
 /// What a Keycloak page asks for, judged only by its form-field names.
 pub(crate) enum PageKind {
-    /// `login.ftl`: username and password posted together.
-    UsernamePassword,
+    /// `login.ftl`: username and password posted together. `error` is Keycloak's message when it
+    /// sends the page back after a failed attempt, such as a wrong password.
+    UsernamePassword { error: Option<String> },
     /// `login-otp.ftl`. `devices` is empty unless Keycloak offers a choice of devices.
     OneTimeCode { devices: Vec<OtpDevice> },
     /// Any other page, or a known page with unexpected fields. The flow denies it.
     Unknown,
+}
+
+impl PageKind {
+    /// Keycloak's message when it sent this page back because it refused the last answers.
+    pub(crate) fn rejection(&self) -> Option<&str> {
+        match self {
+            Self::UsernamePassword { error } => error.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 /// Classify a fetched page body. Never fails: anything unrecognised is `Unknown`.
@@ -91,6 +102,18 @@ struct Tile {
 enum Target {
     Label(String),
     Tile(usize),
+    FieldError,
+}
+
+/// Whether `id` marks Keycloak's message for a rejected field: `input-error` in `base`,
+/// `input-error-<field>` in `keycloak.v2`. Keyed on the element ID, never on its text, so it
+/// holds for localized pages. `keycloak.v2`'s empty `input-error-container-*` wrappers are on
+/// every login page and are not messages.
+fn is_field_error(id: &str) -> bool {
+    id == "input-error"
+        || id
+            .strip_prefix("input-error-")
+            .is_some_and(|rest| !rest.is_empty() && !rest.starts_with("container-"))
 }
 
 /// Text being collected until the element that started it closes.
@@ -113,6 +136,8 @@ pub(super) struct Scan {
     pub(super) controls: Vec<Control>,
     labels: Vec<(String, String)>,
     tiles: Vec<Tile>,
+    /// Keycloak's non-empty field-error messages, in page order.
+    errors: Vec<String>,
     capture: Option<Capture>,
     /// How many `<template>` elements enclose the current position. Their contents are inert:
     /// never shown or submitted, so nothing inside them counts.
@@ -183,6 +208,9 @@ impl Scan {
                 }
             }
             _ => {}
+        }
+        if attribute(tag, "id").is_some_and(|id| is_field_error(&id)) {
+            self.begin(Target::FieldError, name, tag.self_closing);
         }
         if let Some(index) = attribute(tag, "id")
             .and_then(|id| id.strip_prefix(DEVICE_ID_PREFIX)?.parse::<usize>().ok())
@@ -263,6 +291,13 @@ impl Scan {
                 match capture.target {
                     Target::Label(target) => self.labels.push((target, capture.text)),
                     Target::Tile(index) => self.tiles[index].text = capture.text,
+                    Target::FieldError => {
+                        // The message is shown in a terminal, so it is cleaned like a label.
+                        let message = clean_label(&capture.text);
+                        if !message.is_empty() {
+                            self.errors.push(message);
+                        }
+                    }
                 }
             }
             other => self.capture = other,
@@ -277,7 +312,9 @@ impl Scan {
         }
         if self.has("username") && self.has("password") {
             let login = self.only(LOGIN_FIELDS) && self.unique() && self.tiles.is_empty();
-            return login.then_some(PageKind::UsernamePassword);
+            return login.then(|| PageKind::UsernamePassword {
+                error: self.errors.first().cloned(),
+            });
         }
         if self.has("otp") && !self.has("password") && self.only(OTP_FIELDS) && self.unique() {
             return self
@@ -419,9 +456,13 @@ fn clean_label(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify, toggle_credential, PageKind};
+    use super::{classify, is_field_error, toggle_credential, PageKind};
 
     const BASE_LOGIN: &str = include_str!("../../tests/fixtures/keycloak/base/login.html");
+    const BASE_WRONG_PASSWORD: &str =
+        include_str!("../../tests/fixtures/keycloak/base/login-wrong-password.html");
+    const V2_WRONG_PASSWORD: &str =
+        include_str!("../../tests/fixtures/keycloak/keycloak.v2/login-wrong-password.html");
     const BASE_OTP: &str = include_str!("../../tests/fixtures/keycloak/base/login-otp.html");
     const BASE_DEVICES: &str =
         include_str!("../../tests/fixtures/keycloak/base/login-otp-devices.html");
@@ -461,12 +502,68 @@ mod tests {
         page.replacen("</form>", &format!("{extra}</form>"), 1)
     }
 
+    /// The login page's error message, or `None` when the page is not the login page.
+    fn login_error(html: &str) -> Option<Option<String>> {
+        match kind(html) {
+            PageKind::UsernamePassword { error } => Some(error),
+            _ => None,
+        }
+    }
+
     #[test]
     fn login_pages_in_both_themes() {
         for page in [BASE_LOGIN, V2_LOGIN] {
-            assert!(matches!(kind(page), PageKind::UsernamePassword));
+            assert_eq!(login_error(page), Some(None));
+            assert_eq!(kind(page).rejection(), None);
             assert_eq!(devices(page), None);
         }
+    }
+
+    #[test]
+    fn a_wrong_password_page_carries_keycloaks_message_in_both_themes() {
+        for page in [BASE_WRONG_PASSWORD, V2_WRONG_PASSWORD] {
+            let message = "Invalid username or password.";
+            assert_eq!(login_error(page), Some(Some(message.to_owned())));
+            assert_eq!(kind(page).rejection(), Some(message));
+        }
+        // Only the login page reports a rejection.
+        assert_eq!(login_error(BASE_OTP), None);
+        assert_eq!(kind(BASE_OTP).rejection(), None);
+    }
+
+    #[test]
+    fn field_errors_are_found_by_element_id_not_text() {
+        for id in [
+            "input-error",
+            "input-error-username",
+            "input-error-password",
+        ] {
+            assert!(is_field_error(id), "{id}");
+        }
+        for id in [
+            "input-error-container-username",
+            "input-error-",
+            "input-errors",
+            "kc-feedback-text",
+            "",
+        ] {
+            assert!(!is_field_error(id), "{id}");
+        }
+        // Localized text is kept, cleaned of control characters and extra whitespace.
+        let localized = BASE_LOGIN.replacen(
+            "</form>",
+            "<span id=\"input-error\">\n  Nom d'utilisateur ou\u{202e} mot de passe invalide.\n</span></form>",
+            1,
+        );
+        assert_eq!(
+            login_error(&localized),
+            Some(Some(
+                "Nom d'utilisateur ou mot de passe invalide.".to_owned()
+            ))
+        );
+        // An empty message box is not a rejection.
+        let empty = with_in_form(BASE_LOGIN, "<span id=\"input-error\">  </span>");
+        assert_eq!(login_error(&empty), Some(None));
     }
 
     #[test]
@@ -557,7 +654,7 @@ mod tests {
             BASE_LOGIN,
             r#"<script>document.write('<input name="email">')</script>"#,
         );
-        assert!(matches!(kind(&page), PageKind::UsernamePassword));
+        assert!(matches!(kind(&page), PageKind::UsernamePassword { .. }));
     }
 
     /// WebAuthn and recovery codes are not built yet. Pinning their pages as Unknown makes adding
@@ -592,7 +689,7 @@ mod tests {
             BASE_LOGIN,
             r#"<template><input name="email"><template><form></form></template><input name="otp"></template>"#,
         );
-        assert!(matches!(kind(&page), PageKind::UsernamePassword));
+        assert!(matches!(kind(&page), PageKind::UsernamePassword { .. }));
     }
 
     #[test]

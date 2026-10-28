@@ -196,6 +196,13 @@ async fn resolve(
 /// Hand the page to its factor and return the page's first challenge.
 fn present(factors: &dyn Factors, flow: &mut AuthFlow, page: &Page) -> Result<AuthStep> {
     let (kind, form) = form::extract(page)?;
+    // Keycloak sent the page back with a field error, such as a wrong password: it refused the
+    // answers. The login ends there, as a failed login, so the caller starts a new one.
+    if let Some(reason) = kind.rejection() {
+        let reason = reason.to_owned();
+        flow.fail();
+        return Ok(AuthStep::Failed { reason });
+    }
     let factor = factors.for_page(&kind).ok_or(Error::UnsupportedFactor)?;
     let mut queue = VecDeque::from(factor.challenges(&kind, flow.login_hint.as_deref())?);
     let first = queue
