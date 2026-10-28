@@ -22,7 +22,8 @@
 # keycloak.v2 login themes. Run `make oracle-up` first. The script adds the
 # charter's bob and carol OTP users to the running test realm only;
 # realm-export.json is not changed. Session-specific values are replaced with
-# placeholders.
+# placeholders. The wrong-password page is alice's login page after a failed
+# attempt.
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
@@ -96,7 +97,7 @@ sys.stdout.write(re.sub(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", stable, 
 }
 
 capture() {
-    local theme=$1 user=$2 jar="$work/cookies" page action query
+    local theme=$1 user=$2 secret=${4:-$password} jar="$work/cookies" page action query
     rm -f "$jar"
     query="client_id=$client&response_type=code&scope=openid&state=fixture-state&nonce=fixture-nonce"
     query+="&redirect_uri=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$redirect")"
@@ -104,7 +105,7 @@ capture() {
     printf '%s' "$page" | scrub > "$out_dir/$theme/login.html"
     action=$(printf '%s' "$page" | form_action)
     "${kc_curl[@]}" -c "$jar" -b "$jar" "$action" \
-        --data-urlencode "username=$user" --data-urlencode "password=$password" |
+        --data-urlencode "username=$user" --data-urlencode "password=$secret" |
         scrub > "$out_dir/$theme/$3"
 }
 
@@ -124,6 +125,8 @@ for theme in keycloak.v2 base; do
     printf '{"loginTheme":"%s"}' "$theme" | admin PUT "" > /dev/null
     capture "$theme" bob login-otp.html
     capture "$theme" carol login-otp-devices.html
+    # Keycloak answers a wrong password with the login page again, carrying its error.
+    capture "$theme" alice login-wrong-password.html wrong-password
     echo "captured $theme"
 done
 
