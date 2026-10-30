@@ -46,7 +46,7 @@ fn trace(message: &str) {
     }
 }
 
-fn config() -> Config {
+pub(super) fn config() -> Config {
     let server = std::env::var("KEYCLOAK_URL").expect("KEYCLOAK_URL must be set for live tests");
     let ca = std::env::var("KEYCLOAK_CA").expect("KEYCLOAK_CA must be set for live tests");
     let mut config = Config::new(&server, "himmelcloak-test", BROWSER_ONLY_CLIENT).unwrap();

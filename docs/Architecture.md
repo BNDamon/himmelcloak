@@ -111,14 +111,19 @@ rejected without changing state.
 Calling the adapter simulates user presence. Required user verification returns
 `UnsupportedFactor` so a caller can choose another authenticator; Preferred and
 Discouraged produce UV=0. Only explicitly allowed credentials are supported.
+Malformed requests are rejected before signing: the RP ID must be nonempty,
+the allow list may contain at most 64 entries, and each credential ID must
+contain 1–1023 bytes. Invalid entries reject the entire request even when
+another entry matches; these failures leave the signature counter unchanged.
 The internal `RefCell` makes the authenticator non-`Sync`; sharing it across
 Tokio tasks requires a mutex around mutable credential state. Borrow conflicts
 return `Crypto`. Keys and counters are lost when the instance is dropped.
 
 Keycloak registration, attestation, persistent storage, discoverable credentials,
-CTAP2 messages, CBOR parsing, and a live WebAuthn login fixture remain pending.
-The public credential ID and key allow a fixture to register the credential
-without accessing private signing state.
+CTAP2 messages, and production CBOR parsing remain pending. The live test realm
+preloads a disposable software credential; a test-only signer proves Keycloak
+accepts its assertions and rejects tampered signatures. The production constructor
+still generates a fresh key for every instance. See [Testing](Testing.md).
 
 Unit tests check the assertion-data layout and an independently calculated RP
 ID hash, verify DER signatures using the public key, reject tampering, and
@@ -140,7 +145,7 @@ Docker. See [Testing](Testing.md).
 | --- | --- | --- |
 | Password | Direct Access Grant; later native flow | Direct grant implemented; native login form and code exchange live-tested with direct grants disabled, crate-internal until the driver is connected |
 | TOTP / HOTP | wolfCrypt HMAC generation and verification; Direct Access Grant; later native flow | SHA-1, SHA-256, and SHA-512 generation and verification implemented; Keycloak credential persistence and live TOTP fixture pending |
-| WebAuthn / passkeys | Native flow and authenticator adapter | Virtual adapter implemented; native flow and live fixture pending |
+| WebAuthn / passkeys | Native flow and authenticator adapter | Virtual adapter and seeded live assertion fixture implemented; public native flow pending |
 | SMS / email OTP | Native flow | Planned |
 | Recovery codes | Native flow | Planned |
 | X.509 / PIV / CAC | Mutual TLS and Keycloak flow | Planned |

@@ -27,6 +27,9 @@ const AUTHENTICATOR_DATA_LEN: usize = 37;
 const MAX_P256_DER_SIG_LEN: usize = 72;
 const FLAG_UP: u8 = 0x01;
 const FLAG_UV: u8 = 0x04;
+// Local resource limits for this single-credential virtual backend.
+const MAX_ALLOW_CREDENTIALS: usize = 64;
+const MAX_CREDENTIAL_ID_LEN: usize = 1023;
 
 // Keep signing-key access and counter updates private. Avoid Debug and Clone
 // because this state contains a private signing key.
@@ -45,6 +48,9 @@ struct InMemoryCredential {
 /// Calling get_assertion simulates user presence for this virtual backend;
 /// it does not perform a physical touch or user verification.
 /// Requests requiring user verification return [`crate::Error::UnsupportedFactor`].
+/// Malformed requests return [`crate::Error::AuthenticationRejected`]: RP IDs
+/// and credential IDs must be nonempty, allow lists are limited to 64 entries,
+/// and each credential ID is limited to 1023 bytes, including unmatched entries.
 ///
 /// Internal state uses `RefCell`, so this type is not `Sync`. A driver sharing
 /// it across Tokio tasks will need a mutex around the mutable credential state.
@@ -60,6 +66,37 @@ impl SoftwareAuthenticator {
         Ok(Self {
             credential: std::cell::RefCell::new(credential),
         })
+    }
+
+    // Known, disposable key material is available only in the crate's test build.
+    #[cfg(test)]
+    pub(crate) fn realm_fixture() -> Self {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/keycloak/software-credential.json"
+        ))
+        .unwrap();
+        let decode = |name: &str| {
+            URL_SAFE_NO_PAD
+                .decode(fixture[name].as_str().unwrap())
+                .unwrap()
+        };
+        let public: [u8; 65] = decode("publicKey").try_into().unwrap();
+        let scalar: [u8; 32] = decode("privateScalar").try_into().unwrap();
+        let signing_key = wolfssl_wolfcrypt::ecdsa::P256SigningKey::import_x963(
+            &public,
+            &scalar,
+            crate::crypto::rng().unwrap(),
+        )
+        .unwrap();
+        Self {
+            credential: std::cell::RefCell::new(InMemoryCredential {
+                signing_key,
+                rp_id: fixture["rpId"].as_str().unwrap().to_owned(),
+                credential_id: decode("credentialId"),
+                sign_count: 0,
+            }),
+        }
     }
 
     /// Copy the public credential ID for use in an allowed-credentials list.
@@ -143,6 +180,16 @@ impl InMemoryCredential {
     // This initial authenticator has no user-verification mechanism and only
     // handles explicitly allowed credentials (no discoverable-credential flow).
     fn validate_request(&self, request: &super::WebAuthnGetRequest) -> crate::Result<()> {
+        // Reject malformed lists before scanning for a match, even if the first ID matches.
+        if request.rp_id.is_empty()
+            || request.allow_credentials.len() > MAX_ALLOW_CREDENTIALS
+            || request
+                .allow_credentials
+                .iter()
+                .any(|allowed| allowed.id.is_empty() || allowed.id.len() > MAX_CREDENTIAL_ID_LEN)
+        {
+            return Err(crate::Error::AuthenticationRejected);
+        }
         if request.rp_id != self.rp_id {
             return Err(crate::Error::AuthenticationRejected);
         }
@@ -163,6 +210,11 @@ impl InMemoryCredential {
 
     // This is local provisioning for tests, not a CTAP makeCredential handler.
     fn new(rp_id: String) -> crate::Result<Self> {
+        if rp_id.is_empty() {
+            return Err(crate::Error::InvalidConfiguration(
+                "empty authenticator RP ID",
+            ));
+        }
         // Generate a fresh opaque ID independently of signing-key setup.
         // The 32-byte ID length is our implementation choice, not a private key.
         let credential_id = crate::crypto::random_bytes::<32>()?.to_vec();
@@ -223,6 +275,100 @@ fn assertion_authenticator_data(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn realm_fixture_matches_the_seeded_public_credential() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        let authenticator = SoftwareAuthenticator::realm_fixture();
+        let realm: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/keycloak/realm-export.json")).unwrap();
+        let user = realm["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|user| user["username"] == "passkey-test")
+            .unwrap();
+        let credential = user["credentials"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|credential| credential["type"] == "webauthn")
+            .unwrap();
+        let data: serde_json::Value =
+            serde_json::from_str(credential["credentialData"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            URL_SAFE_NO_PAD
+                .decode(data["credentialId"].as_str().unwrap())
+                .unwrap(),
+            authenticator.credential_id()
+        );
+        // COSE EC2 / ES256 / P-256 map followed by the two public coordinates.
+        let public = authenticator.public_key();
+        let mut cose = vec![0xa5, 0x01, 0x02, 0x03, 0x26, 0x20, 0x01, 0x21, 0x58, 0x20];
+        cose.extend_from_slice(&public[1..33]);
+        cose.extend_from_slice(&[0x22, 0x58, 0x20]);
+        cose.extend_from_slice(&public[33..]);
+        assert_eq!(
+            URL_SAFE_NO_PAD
+                .decode(data["credentialPublicKey"].as_str().unwrap())
+                .unwrap(),
+            cose
+        );
+        assert_eq!(data["counter"], 0);
+        assert_eq!(
+            realm["webAuthnPolicyRpId"],
+            authenticator.credential.borrow().rp_id
+        );
+    }
+
+    #[test]
+    fn malformed_requests_fail_without_consuming_a_counter() {
+        use super::super::{
+            CredentialDescriptor, UserVerification, WebAuthnAdapter, WebAuthnGetRequest,
+        };
+        let authenticator = SoftwareAuthenticator::new("example.com".into()).unwrap();
+        let id = authenticator.credential_id();
+        let valid = || WebAuthnGetRequest {
+            rp_id: "example.com".into(),
+            client_data_hash: [0; 32],
+            allow_credentials: vec![CredentialDescriptor { id: id.clone() }],
+            user_verification: UserVerification::Preferred,
+        };
+        let mut empty_rp = valid();
+        empty_rp.rp_id.clear();
+        let mut empty_id = valid();
+        empty_id
+            .allow_credentials
+            .push(CredentialDescriptor { id: vec![] });
+        let mut oversized_id = valid();
+        oversized_id.allow_credentials.push(CredentialDescriptor {
+            id: vec![0; MAX_CREDENTIAL_ID_LEN + 1],
+        });
+        let mut too_many = valid();
+        too_many.allow_credentials = (0..=MAX_ALLOW_CREDENTIALS)
+            .map(|_| CredentialDescriptor { id: id.clone() })
+            .collect();
+        for request in [empty_rp, empty_id, oversized_id, too_many] {
+            assert!(matches!(
+                authenticator.get_assertion(&request),
+                Err(crate::Error::AuthenticationRejected)
+            ));
+            assert_eq!(authenticator.credential.borrow().sign_count, 0);
+        }
+        let mut boundary = valid();
+        boundary.allow_credentials = (0..MAX_ALLOW_CREDENTIALS - 1)
+            .map(|_| CredentialDescriptor {
+                id: vec![0; MAX_CREDENTIAL_ID_LEN],
+            })
+            .collect();
+        boundary.allow_credentials.push(CredentialDescriptor { id });
+        let assertion = authenticator.get_assertion(&boundary).unwrap();
+        assert_eq!(&assertion.authenticator_data[33..], &1u32.to_be_bytes());
+        assert!(matches!(
+            SoftwareAuthenticator::new(String::new()),
+            Err(crate::Error::InvalidConfiguration(_))
+        ));
+    }
 
     #[test]
     fn test_borrow_conflict_is_an_internal_error() {

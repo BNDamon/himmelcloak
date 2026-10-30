@@ -4,7 +4,9 @@
   "sslRequired": "all",
   "registrationAllowed": false,
   "eventsEnabled": true,
-  "eventsListeners": ["jboss-logging"],
+  "eventsListeners": [
+    "jboss-logging"
+  ],
   "clients": [
     {
       "clientId": "himmelcloak-test-client",
@@ -14,8 +16,12 @@
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
-      "redirectUris": ["http://127.0.0.1:8845/himmelcloak/callback"],
-      "webOrigins": ["http://127.0.0.1:8845"]
+      "redirectUris": [
+        "http://127.0.0.1:8845/himmelcloak/callback"
+      ],
+      "webOrigins": [
+        "http://127.0.0.1:8845"
+      ]
     },
     {
       "clientId": "himmelcloak-browser-only",
@@ -25,8 +31,26 @@
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
-      "redirectUris": ["http://127.0.0.1:8845/himmelcloak/callback"],
-      "webOrigins": ["http://127.0.0.1:8845"]
+      "redirectUris": [
+        "http://127.0.0.1:8845/himmelcloak/callback"
+      ],
+      "webOrigins": [
+        "http://127.0.0.1:8845"
+      ]
+    },
+    {
+      "clientId": "himmelcloak-webauthn",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "http://127.0.0.1:8845/himmelcloak/callback"
+      ],
+      "authenticationFlowBindingOverrides": {
+        "browser": "fixture-webauthn"
+      }
     }
   ],
   "users": [
@@ -38,8 +62,62 @@
       "lastName": "Test",
       "email": "alice@example.invalid",
       "credentials": [
-        {"type": "password", "value": "correct-horse-battery-staple", "temporary": false}
+        {
+          "type": "password",
+          "value": "correct-horse-battery-staple",
+          "temporary": false
+        }
       ]
+    },
+    {
+      "username": "passkey-test",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Passkey",
+      "lastName": "Test",
+      "email": "passkey@example.invalid",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "correct-horse-battery-staple",
+          "temporary": false
+        },
+        {
+          "type": "webauthn",
+          "userLabel": "Software test credential",
+          "secretData": "{}",
+          "credentialData": "{\"aaguid\":\"00000000-0000-0000-0000-000000000000\",\"credentialId\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\",\"counter\":0,\"attestationStatement\":\"oA\",\"credentialPublicKey\":\"pQECAyYgASFYIGsX0fLhLEJH-Lzm5WOkQPJ3A32BLeszoPShOUXYmMKWIlggT-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU\",\"attestationStatementFormat\":\"none\",\"transports\":[]}"
+        }
+      ]
+    }
+  ],
+  "webAuthnPolicyRpId": "keycloak.test",
+  "webAuthnPolicyUserVerificationRequirement": "discouraged",
+  "webAuthnPolicySignatureAlgorithms": [
+    "ES256"
+  ],
+  "authenticationFlows": [
+    {
+      "alias": "fixture-webauthn",
+      "description": "Test-only password plus seeded WebAuthn credential",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-username-password-form",
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "authenticatorFlow": false
+        },
+        {
+          "authenticator": "webauthn-authenticator",
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "authenticatorFlow": false
+        }
+      ],
+      "id": "fixture-webauthn"
     }
   ]
 }

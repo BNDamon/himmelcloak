@@ -38,7 +38,7 @@ services:
     depends_on:
       - keycloak
     entrypoint: ["/work/tests/keycloak/wait-and-test.sh"]
-    command: ["cargo", "test", "--locked", "--lib", "--test", "live_keycloak", "--", "--ignored"]
+    command: ["cargo", "test", "--locked", "--features", "webauthn-virtual", "--lib", "--test", "live_keycloak", "--", "--ignored"]
 
 volumes:
   cargo-target:
