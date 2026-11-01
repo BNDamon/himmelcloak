@@ -45,6 +45,11 @@ The separate native dependency matrix resolves current stable and development
 refs to commit IDs before building wolfSSL and curl. The standard image uses
 the wolfSSL and curl release commits pinned in `scripts/build-native.sh`. The image records
 both refs and commits in `/opt/himmelcloak-native/.himmelcloak-refs`.
+The dependency build disables wolfSSL's example and test executables; it builds
+the library with all features and retains compiler warning checks. The compatibility
+matrix still builds Himmelcloak against each dependency pair and runs its tests.
+The native cache stamp includes this build mode. Existing native prefixes need a
+fresh `NATIVE_PREFIX` or a rebuild when their stamp does not match.
 Each new login factor must add a live scenario before its feature is treated as
 complete.
 
