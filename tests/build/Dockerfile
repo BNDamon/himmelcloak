@@ -1,4 +1,4 @@
-FROM rust:1.95.0-bookworm
+FROM rust:1.99.1-bookworm
 
 RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
     && apt-get update && apt-get install -y --no-install-recommends \
@@ -16,7 +16,7 @@ RUN WOLFSSL_REF="$WOLFSSL_REF" WOLFSSL_COMMIT="$WOLFSSL_COMMIT" \
     CURL_REF="$CURL_REF" CURL_COMMIT="$CURL_COMMIT" \
     NATIVE_PREFIX=/opt/himmelcloak-native himmelcloak-build-native
 
-RUN rustup component add --toolchain 1.95.0 clippy rustfmt
+RUN rustup component add --toolchain 1.99.1 clippy rustfmt
 
 ENV WOLFSSL_PREFIX=/opt/himmelcloak-native
 ENV PKG_CONFIG_PATH=/opt/himmelcloak-native/lib/pkgconfig
