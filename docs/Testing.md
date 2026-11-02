@@ -54,6 +54,11 @@ The separate native dependency matrix resolves current stable and development
 refs to commit IDs before building wolfSSL and curl. The standard image uses
 the wolfSSL and curl release commits pinned in `scripts/build-native.sh`. The image records
 both refs and commits in `/opt/himmelcloak-native/.himmelcloak-refs`.
+The dependency build disables wolfSSL's example and test executables; it builds
+the library with all features and retains compiler warning checks. The compatibility
+matrix still builds Himmelcloak against each dependency pair and runs its tests.
+The native cache stamp includes this build mode. Existing native prefixes need a
+fresh `NATIVE_PREFIX` or a rebuild when their stamp does not match.
 Each new login factor must add a live scenario before its feature is treated as
 complete.
 
@@ -104,3 +109,46 @@ For a targeted unit run, including malformed requests and fixture consistency:
 Malformed-input tests cover empty RP and credential IDs, oversized IDs, and
 excessive allow lists, including malformed entries alongside a matching ID.
 They also check accepted size boundaries and unchanged counters after failure.
+
+## Group synchronization
+
+Compose also imports `tests/keycloak/hc49-test-realm.json`, a separate disposable
+realm with an allowed member, an unrelated member, a read-only service account,
+and an account with no read permission. Its secrets are public test values, never
+deployment credentials. The normal `make test-live` suite runs
+`admin::tests::read_only_service_account_live`: it checks that only the allowed
+member is returned, a user-creation attempt with the read-only account gets 403,
+and the no-permission account's group read gets 403.
+
+Injected-transport tests in `src/admin.rs` assert exact token and group-only request
+paths, the client-credentials form, bearer header, and pagination offsets. They cover
+empty/short/full/oversized pages, invalid inputs, query/path injection, malformed or
+repeated entries, and authentication/API failures without a list-users fallback.
+The CLI library's tests check sync settings and the ownership, permissions, symlink,
+empty-secret and size rejection paths. They are included in the existing
+`cargo test --locked --workspace --lib` CI command. Other CLI command-parsing tests
+remain in its binary target and can be run with `cargo test --locked -p himmelcloak-cli`.
+
+For a dedicated disposable local server instead of Docker, install Java 21 and
+unpack a Keycloak distribution. In one terminal run:
+
+```sh
+HC49_KEYCLOAK_HOME=/path/to/disposable/keycloak bash tests/keycloak/start-hc49-local.sh
+```
+
+The script generates a short-lived localhost certificate and starts the fixture on
+loopback port 18443. Use a fresh dedicated installation when changing the fixture:
+startup import does not overwrite an existing realm. After it is ready, run:
+
+```sh
+HC49_KEYCLOAK_URL=https://localhost:18443 \
+HC49_KEYCLOAK_CA=/tmp/himmelcloak-hc49-live/server.crt \
+scripts/with-native.sh cargo test --locked -p himmelcloak --lib \
+  admin::tests::read_only_service_account_live -- --ignored --exact
+```
+
+The test also accepts the normal `KEYCLOAK_URL` and `KEYCLOAK_CA` variables from
+Compose. Stop the local fixture with Ctrl+C in its terminal. See the
+[Admin REST API](https://www.keycloak.org/docs-api/latest/rest-api/index.html)
+and [server administration guide](https://www.keycloak.org/docs/latest/server_admin/index.html)
+for the group-member endpoint and service-account roles.

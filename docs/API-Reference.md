@@ -63,3 +63,12 @@ These types replace the earlier placeholders, which had no callers: `Challenge::
 `Answer::Totp` became `OneTimeCode`, the SMS and email variants were removed until those
 Priority 2 factors are built, and `AuthFlow::default()` is gone because only
 `initiate_auth_flow` creates a flow.
+
+## Read-only group sync
+
+`himmelcloak::admin::read_allowed_group(&Config, group_id, client_secret)` uses
+client credentials and returns `Vec<GroupMember>` with `id`, `username`, and
+`enabled`. It reads only that group's members and returns no partial result on
+failure. This service-account API is separate from `PublicClientApplication`'s
+public-client login flow. See [Group sync](Getting-Started.md#group-sync) for CLI configuration and
+[Group synchronization](Testing.md#group-synchronization) for the live fixture.

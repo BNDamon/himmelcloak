@@ -32,6 +32,7 @@
 #[cfg(panic = "abort")]
 compile_error!("himmelcloak requires panic=unwind for Tokio time-driver detection");
 
+pub mod admin;
 pub mod authenticator;
 pub mod authn;
 pub mod client;

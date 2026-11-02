@@ -219,3 +219,39 @@ through the code exchange to verified tokens, with direct grants disabled, and
 proves Keycloak refuses a reused or stale code. It will grow to cover WebAuthn
 through a virtual authenticator, recovery, and each new factor as those
 implementations land. See [Testing](Testing.md).
+
+## NSS group synchronization
+
+`himmelcloak-cli sync-users` is a root administrator operation in the CLI workspace
+crate. It uses a confidential service account's client-credentials grant over the
+existing certificate-verified wolfSSL/libcurl transport. The core's
+`admin::read_allowed_group` requests only the configured group ID's members at
+`/admin/realms/{realm}/groups/{group-id}/members`; it does not discover groups or
+list all realm users, including after an authorization or network failure.
+
+The reader requests pages of at most 100, advances the offset by the number returned,
+and ends on an empty page even when Keycloak applies a smaller page-size cap.
+Malformed entries, repeated IDs, oversized pages, more than 100,000 members, or an
+API error reject the whole result. Membership may change during pagination; this
+is not a transactional snapshot. Response sizes and request timeouts use the
+existing transport limits.
+
+The command reads its `[sync]` settings from the CLI's existing `himmelcloak.toml`
+in the current working directory. Its root-owned configuration must not be writable
+by another user. The service-account secret is read from a separate root-owned
+0600/0400 regular file, not an argument or an inline TOML value. Both files reject
+symlinks and are read through checked, size-bounded descriptors into zeroizing buffers.
+Bearer tokens, request forms, and HTTP response bodies retain the core's existing
+zeroization behavior. No HTTP or disabled-certificate-verification option is exposed.
+
+The disposable fixture grants only the `realm-management` `view-users` role, without
+`manage-users` or `realm-admin`. This role permits realm-wide reads; group-only access
+is enforced by the application's request scope, not by a claim of per-group server
+isolation. Deployments requiring server-enforced isolation should configure Keycloak
+fine-grained group permissions separately.
+
+This stage writes the complete membership as JSON on stdout after all pages succeed,
+retaining each member's `id`, `username`, and `enabled` state. It does not yet allocate
+UIDs, write local account files, change NSS configuration, schedule a timer, or enable
+login. See [Group sync](Getting-Started.md#group-sync) and its
+[live and unit tests](Testing.md#group-synchronization).

@@ -49,6 +49,7 @@ make test
 
 See [Getting Started](docs/Getting-Started.md) and [Testing](docs/Testing.md)
 for prerequisites, configuration, and CI behavior.
+For the root-only allowed-group reader, see [Group sync](docs/Getting-Started.md#group-sync).
 
 ## Documentation
 

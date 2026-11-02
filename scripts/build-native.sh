@@ -69,7 +69,8 @@ fi
     echo "Native dependency commits must be full lowercase Git SHA-1 values" >&2
     exit 1
 }
-REFS="wolfssl $WOLFSSL_REF $WOLFSSL_COMMIT
+REFS="build library-only-v1
+wolfssl $WOLFSSL_REF $WOLFSSL_COMMIT
 curl $CURL_REF $CURL_COMMIT
 static-pic enabled"
 
@@ -103,8 +104,11 @@ fetch_commit() {
 fetch_commit https://github.com/wolfSSL/wolfssl.git "$WOLFSSL_COMMIT" "$BUILD_DIR/wolfssl"
 pushd "$BUILD_DIR/wolfssl" >/dev/null
 ./autogen.sh
+# Install the dependency library, not wolfSSL's example/test executables.
+# wolfSSL's BUILD_TESTS conditional follows --enable-examples.
 # PAM is a shared library even though its native dependencies are static.
-./configure --prefix="$NATIVE_PREFIX" --enable-all --enable-static --disable-shared --with-pic
+./configure --prefix="$NATIVE_PREFIX" --enable-all --enable-static --disable-shared \
+    --with-pic --disable-examples --disable-crypttests
 make -j"$(nproc)"
 make install
 popd >/dev/null

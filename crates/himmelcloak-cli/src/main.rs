@@ -51,8 +51,21 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(Command::SyncUsers) => {
-            println!("himmelcloak-cli: sync-users is not implemented yet");
-            ExitCode::SUCCESS
+            #[cfg(unix)]
+            {
+                match himmelcloak_cli::run_sync_users(Path::new("himmelcloak.toml")) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("himmelcloak-cli: sync-users: {error}");
+                        ExitCode::FAILURE
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                eprintln!("himmelcloak-cli: sync-users requires Unix");
+                ExitCode::FAILURE
+            }
         }
         Ok(Command::ClearState) => {
             println!("himmelcloak-cli: clear-state is not implemented yet");

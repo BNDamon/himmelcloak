@@ -184,7 +184,12 @@ name = "himmelcloak-cli"
 version = "0.0.0"
 dependencies = [
  "himmelcloak",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
  "toml",
+ "zeroize",
 ]
 
 [[package]]

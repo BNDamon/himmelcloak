@@ -3,10 +3,10 @@
 The working core currently covers OIDC discovery, password direct grant, ID-token verification,
 refresh, revocation, and userinfo. The native flow driver and additional factors are in progress.
 
-## CLI skeleton
+## CLI administration
 
-The Sprint 2 (`HC-78`) `himmelcloak-cli` crate provides the initial command-line
-interface skeleton. Build it from the workspace root:
+The `himmelcloak-cli` workspace crate provides the administrator command-line
+interface. Build it from the workspace root:
 
 ```sh
 cargo build --locked -p himmelcloak-cli
@@ -33,9 +33,51 @@ cargo run --locked -p himmelcloak-cli -- sync-users
 cargo run --locked -p himmelcloak-cli -- clear-state
 ```
 
-At this Sprint 2 stage, `config check` validates TOML syntax only. The
-`test-login`, `sync-users`, and `clear-state` commands are placeholders; their
-real behavior will be implemented in later slices.
+`config check` validates TOML syntax only. `test-login` and `clear-state` remain
+placeholders. `sync-users` now reads the configured group as described below.
+
+### Group sync
+
+Build using the project's native dependencies, then run the CLI as root from a
+trusted configuration directory. The command reads `himmelcloak.toml` in that
+directory, following the existing CLI configuration-file behavior. Add:
+
+```toml
+[sync]
+server_url = "https://keycloak.example.org"
+realm = "example"
+client_id = "linux-sync"
+allowed_group_id = "11111111-1111-4111-8111-111111111111"
+client_secret_file = "/etc/himmelcloak/admin-client.secret"
+# ca_bundle = "/etc/ssl/certs/private-keycloak-ca.pem"
+```
+
+The server URL is the base URL before `/realms/<realm>` and may include a deployment
+prefix such as `/auth`. The group is an exact ID, not a group-name search.
+Provision a confidential client with service accounts enabled and read-only
+member access; disable its browser and password grants. Do not grant `manage-users`
+or `realm-admin`. The [architecture](Architecture.md#nss-group-synchronization)
+explains the fixture's read-only role and its limitations.
+
+The config must be a root-owned regular file without group/other write access
+and no larger than 64 KiB. The secret must be a separate root-owned regular file
+with mode 0600 or 0400 and no larger than 16 KiB. Both reject symlinks. File paths
+inside `[sync]` must be absolute; a trailing CR/LF is trimmed from the secret.
+Only the `[sync]` table receives typed validation here; `config check` retains
+its existing syntax-only behavior. Use your secret-provisioning process to create
+the real secret file, and never put the secret in command arguments or source control.
+
+```sh
+# Build at the repository root with the native build environment configured.
+scripts/with-native.sh cargo build --locked -p himmelcloak-cli
+
+# From the trusted directory containing himmelcloak.toml:
+sudo /absolute/path/to/target/debug/himmelcloak-cli sync-users
+```
+
+Success returns a JSON array of `{id, username, enabled}` objects. Failure exits
+nonzero with no partial JSON and no fallback to listing all users. Local account-file
+writing and system-login integration are not implemented by this stage.
 
 ## Run the real Keycloak suite
 
