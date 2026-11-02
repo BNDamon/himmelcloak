@@ -20,6 +20,9 @@
  */
 //! PAM module for native Keycloak login, installed as pam_himmelcloak.so.
 
+pub mod config;
+pub mod conversation;
+
 use std::ffi::{c_char, c_int, c_void};
 
 const PAM_AUTH_ERR: c_int = 7;

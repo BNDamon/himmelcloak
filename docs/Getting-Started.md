@@ -27,8 +27,19 @@ and `make lint` use them. The local build requires Autotools, libtool, pkg-confi
 Rust toolchain from `rust-toolchain.toml`. Plain `cargo test` skips the ignored live tests;
 `make test` runs unit tests plus the local integration and contract tests. Use `make test-live` for Keycloak.
 The Linux native build links wolfSSL and libcurl statically so locally built
-applications can run without setting a library search path. Rebuild a prefix
-created by an older shared-library build before using it with this setup.
+applications can run without setting a library search path. The static objects
+are position independent (`--with-pic`) so they can also be linked into the PAM
+shared module. The cache stamp records this build setting. If an existing
+prefix predates it, choose a fresh prefix rather than reusing non-PIC objects:
+
+```bash
+export NATIVE_PREFIX="$PWD/target/native-pic"
+make test
+make lint
+```
+
+The previous native prefix is left intact. See the [PAM module notes](../crates/pam_himmelcloak/README.md)
+for HC-40's message translation and configuration-parsing boundary.
 
 The test realm's user is `alice` with password `correct-horse-battery-staple`. These credentials
 are for the disposable Docker realm only.
