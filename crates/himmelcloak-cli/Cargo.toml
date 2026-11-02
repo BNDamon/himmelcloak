@@ -1,0 +1,17 @@
+[package]
+name = "himmelcloak-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Command-line administration tool for Himmelcloak."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+himmelcloak = { path = "../.." }
+toml = "0.8"
