@@ -407,6 +407,7 @@ name = "pam_himmelcloak"
 version = "0.0.0"
 dependencies = [
  "himmelcloak",
+ "toml",
 ]
 
 [[package]]

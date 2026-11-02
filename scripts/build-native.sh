@@ -71,7 +71,8 @@ fi
 }
 REFS="build library-only-v1
 wolfssl $WOLFSSL_REF $WOLFSSL_COMMIT
-curl $CURL_REF $CURL_COMMIT"
+curl $CURL_REF $CURL_COMMIT
+static-pic enabled"
 
 if [[ -f "$NATIVE_PREFIX/lib/pkgconfig/libcurl.pc" && -f "$NATIVE_PREFIX/lib/pkgconfig/wolfssl.pc" ]]; then
     if [[ -f "$NATIVE_PREFIX/lib/libcurl.a" && -f "$NATIVE_PREFIX/lib/libwolfssl.a" &&
@@ -105,8 +106,9 @@ pushd "$BUILD_DIR/wolfssl" >/dev/null
 ./autogen.sh
 # Install the dependency library, not wolfSSL's example/test executables.
 # wolfSSL's BUILD_TESTS conditional follows --enable-examples.
+# PAM is a shared library even though its native dependencies are static.
 ./configure --prefix="$NATIVE_PREFIX" --enable-all --enable-static --disable-shared \
-    --disable-examples --disable-crypttests
+    --with-pic --disable-examples --disable-crypttests
 make -j"$(nproc)"
 make install
 popd >/dev/null
@@ -119,7 +121,8 @@ PKG_CONFIG_PATH="$NATIVE_PREFIX/lib/pkgconfig" ./configure \
     --with-wolfssl="$NATIVE_PREFIX" \
     --without-libpsl \
     --enable-static \
-    --disable-shared
+    --disable-shared \
+    --with-pic
 make -j"$(nproc)"
 make install
 popd >/dev/null

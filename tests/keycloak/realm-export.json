@@ -54,7 +54,7 @@
       }
     }
   ],
-  "users": [
+    "users": [
     {
       "username": "alice",
       "enabled": true,
@@ -88,6 +88,63 @@
           "userLabel": "Software test credential",
           "secretData": "{}",
           "credentialData": "{\"aaguid\":\"00000000-0000-0000-0000-000000000000\",\"credentialId\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\",\"counter\":0,\"attestationStatement\":\"oA\",\"credentialPublicKey\":\"pQECAyYgASFYIGsX0fLhLEJH-Lzm5WOkQPJ3A32BLeszoPShOUXYmMKWIlggT-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU\",\"attestationStatementFormat\":\"none\",\"transports\":[]}"
+        }
+      ]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "Fixture",
+      "email": "bob@example.invalid",
+      "credentials": [
+        {"type": "password", "value": "correct-horse-battery-staple", "temporary": false},
+        {
+          "type": "otp",
+          "userLabel": "Authenticator app",
+          "secretData": "{\"value\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\"}",
+          "credentialData": "{\"subType\":\"totp\",\"digits\":6,\"counter\":0,\"period\":30,\"algorithm\":\"HmacSHA1\",\"secretEncoding\":\"BASE32\"}"
+        }
+      ]
+    },
+    {
+      "username": "carol",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Carol",
+      "lastName": "Fixture",
+      "email": "carol@example.invalid",
+      "credentials": [
+        {"type": "password", "value": "correct-horse-battery-staple", "temporary": false},
+        {
+          "type": "otp",
+          "userLabel": "Authenticator app",
+          "secretData": "{\"value\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA====\"}",
+          "credentialData": "{\"subType\":\"totp\",\"digits\":8,\"counter\":0,\"period\":30,\"algorithm\":\"HmacSHA256\",\"secretEncoding\":\"BASE32\"}"
+        },
+        {
+          "type": "otp",
+          "userLabel": "Hardware token",
+          "secretData": "{\"value\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\"}",
+          "credentialData": "{\"subType\":\"hotp\",\"digits\":6,\"counter\":0,\"period\":30,\"algorithm\":\"HmacSHA1\",\"secretEncoding\":\"BASE32\"}"
+        }
+      ]
+    },
+    {
+      "username": "dave",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Dave",
+      "lastName": "Fixture",
+      "email": "dave@example.invalid",
+      "credentials": [
+        {"type": "password", "value": "correct-horse-battery-staple", "temporary": false},
+        {
+          "type": "otp",
+          "userLabel": "Hardware token",
+          "secretData": "{\"value\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\"}",
+          "credentialData": "{\"subType\":\"hotp\",\"digits\":6,\"counter\":0,\"period\":30,\"algorithm\":\"HmacSHA1\",\"secretEncoding\":\"BASE32\"}"
         }
       ]
     }
