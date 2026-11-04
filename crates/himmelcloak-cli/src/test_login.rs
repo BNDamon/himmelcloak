@@ -18,7 +18,11 @@ struct LoginSettings {
 
 fn load_config(path: &Path) -> LoginResult<Config> {
     let source = Zeroizing::new(fs::read_to_string(path).map_err(|_| "cannot read configuration")?);
-    let document: toml::Value = toml::from_str(&source).map_err(|_| "malformed configuration")?;
+    parse_login_config(&source)
+}
+
+fn parse_login_config(source: &str) -> LoginResult<Config> {
+    let document: toml::Value = toml::from_str(source).map_err(|_| "malformed configuration")?;
     let settings: LoginSettings = document
         .get("login")
         .ok_or("missing [login] settings")?
@@ -134,4 +138,92 @@ pub fn run(path: &Path) -> LoginResult<()> {
         .map_err(|_| "cannot start login runtime")?;
 
     runtime.block_on(login(config))
+}
+#[cfg(test)]
+mod tests {
+    use super::parse_login_config;
+    use std::path::PathBuf;
+
+    const VALID: &str = r#"
+[login]
+server_url = "https://keycloak.test:8443"
+realm = "himmelcloak-test"
+client_id = "himmelcloak-test-client"
+ca_bundle = "/work/tests/keycloak/.generated/ca.pem"
+"#;
+
+    #[test]
+    fn reads_login_settings_and_preserves_unrelated_tables() {
+        let source = format!("{VALID}\n[sync]\nallowed_group_id = 'example'\n");
+        let config = parse_login_config(&source).unwrap();
+
+        assert_eq!(config.server_url.as_str(), "https://keycloak.test:8443/");
+        assert_eq!(config.realm, "himmelcloak-test");
+        assert_eq!(config.client_id, "himmelcloak-test-client");
+        assert_eq!(
+            config.ca_bundle,
+            Some(PathBuf::from("/work/tests/keycloak/.generated/ca.pem"))
+        );
+    }
+
+    #[test]
+    fn accepts_configuration_without_a_custom_ca() {
+        let source = VALID
+            .lines()
+            .filter(|line| !line.starts_with("ca_bundle"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(parse_login_config(&source).unwrap().ca_bundle.is_none());
+    }
+
+    #[test]
+    fn rejects_missing_settings_and_insecure_issuers() {
+        assert!(matches!(
+            parse_login_config("[sync]\nrealm = 'test'\n"),
+            Err("missing [login] settings")
+        ));
+
+        let insecure = VALID.replace("https://", "http://");
+        assert!(matches!(
+            parse_login_config(&insecure),
+            Err("invalid login configuration")
+        ));
+
+        let missing_client = VALID
+            .lines()
+            .filter(|line| !line.starts_with("client_id"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(matches!(
+            parse_login_config(&missing_client),
+            Err("invalid [login] settings")
+        ));
+    }
+
+    #[test]
+    fn configuration_errors_do_not_echo_sensitive_values() {
+        let marker = "DO-NOT-PRINT-THIS-SECRET";
+
+        let unknown_field = format!("{VALID}\npassword = '{marker}'\n");
+        assert_eq!(
+            parse_login_config(&unknown_field).err(),
+            Some("invalid [login] settings")
+        );
+
+        let malformed = format!("{VALID}\npassword = '{marker}");
+        assert_eq!(
+            parse_login_config(&malformed).err(),
+            Some("malformed configuration")
+        );
+
+        let credentials = VALID.replace(
+            "https://keycloak.test",
+            &format!("https://user:{marker}@keycloak.test"),
+        );
+        assert_eq!(
+            parse_login_config(&credentials).err(),
+            Some("invalid login configuration")
+        );
+    }
 }
