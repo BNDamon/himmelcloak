@@ -35,50 +35,95 @@ fn parse_login_config(source: &str) -> LoginResult<Config> {
     config.ca_bundle = settings.ca_bundle;
     Ok(config)
 }
-struct RestoreEcho(libc::termios);
+static SAVED_TERMINAL: std::sync::Mutex<Option<libc::termios>> = std::sync::Mutex::new(None);
+
+fn restore_terminal() -> LoginResult<()> {
+    let mut saved = SAVED_TERMINAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if let Some(original) = saved.as_ref() {
+        // SAFETY: original was obtained from this terminal descriptor.
+        if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, original) } != 0 {
+            return Err("cannot restore terminal settings");
+        }
+        *saved = None;
+    }
+
+    Ok(())
+}
+
+struct RestoreEcho;
 
 impl Drop for RestoreEcho {
     fn drop(&mut self) {
-        // SAFETY: these settings were read from the same terminal descriptor.
-        unsafe {
-            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.0);
-        }
+        let _ = restore_terminal();
     }
 }
 
+fn hide_echo() -> LoginResult<RestoreEcho> {
+    let mut saved = SAVED_TERMINAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if saved.is_some() {
+        return Err("password input is already active");
+    }
+
+    let mut original = std::mem::MaybeUninit::<libc::termios>::uninit();
+
+    // SAFETY: original points to writable storage for terminal settings.
+    if unsafe { libc::tcgetattr(libc::STDIN_FILENO, original.as_mut_ptr()) } != 0 {
+        return Err("password input requires an interactive terminal");
+    }
+
+    // SAFETY: tcgetattr initialized the settings on success.
+    let original = unsafe { original.assume_init() };
+    let mut settings = original;
+    settings.c_lflag &= !(libc::ECHO | libc::ECHONL);
+
+    // Save before changing echo. The mutex coordinates with the interrupt handler.
+    *saved = Some(original);
+    let guard = RestoreEcho;
+
+    // SAFETY: settings contains initialized terminal settings.
+    let result = unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &settings) };
+
+    drop(saved);
+
+    if result != 0 {
+        drop(guard);
+        return Err("cannot hide password input");
+    }
+
+    Ok(guard)
+}
+
+fn install_interrupt_handler() -> LoginResult<()> {
+    ctrlc::try_set_handler(|| {
+        let _ = restore_terminal();
+        std::process::exit(130);
+    })
+    .map_err(|_| "cannot install login interrupt handler")
+}
+
 fn read_input(prompt: &str, hidden: bool) -> LoginResult<Zeroizing<String>> {
-    print!("{prompt}");
-    io::stdout().flush().map_err(|_| "cannot write prompt")?;
+    let restore = if hidden { Some(hide_echo()?) } else { None };
 
-    let restore = if hidden {
-        let mut original = std::mem::MaybeUninit::<libc::termios>::uninit();
-
-        // SAFETY: original points to writable storage for terminal settings.
-        if unsafe { libc::tcgetattr(libc::STDIN_FILENO, original.as_mut_ptr()) } != 0 {
-            return Err("password input requires an interactive terminal");
-        }
-
-        // SAFETY: tcgetattr initialized the settings on success.
-        let original = unsafe { original.assume_init() };
-        let mut settings = original;
-        settings.c_lflag &= !libc::ECHO;
-
-        // SAFETY: settings contains initialized terminal settings.
-        if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &settings) } != 0 {
-            return Err("cannot hide password input");
-        }
-
-        Some(RestoreEcho(original))
-    } else {
-        None
-    };
+    let mut output = io::stdout();
+    write!(output, "{prompt}").map_err(|_| "cannot write prompt")?;
+    output.flush().map_err(|_| "cannot write prompt")?;
 
     let mut value = Zeroizing::new(String::new());
     let result = io::stdin().read_line(&mut value);
 
-    drop(restore);
     if hidden {
-        println!();
+        restore_terminal()?;
+    }
+    drop(restore);
+
+    if hidden {
+        writeln!(io::stdout()).map_err(|_| "cannot write prompt")?;
     }
 
     let count = result.map_err(|_| "cannot read input")?;
@@ -100,10 +145,21 @@ async fn login(config: Config) -> LoginResult<()> {
         .await
         .map_err(|_| "cannot connect to Keycloak")?;
 
-    let (mut flow, mut step) = client
-        .initiate_auth_flow(Start::default())
-        .await
-        .map_err(|_| "cannot start login")?;
+    let (mut flow, mut step) =
+        client
+            .initiate_auth_flow(Start::default())
+            .await
+            .map_err(|error| match error {
+                himmelcloak::Error::HttpStatus(_) => "cannot start login: unexpected HTTP status",
+                himmelcloak::Error::Transport(_) => "cannot start login: transport failure",
+                himmelcloak::Error::Protocol(_) => "cannot start login: protocol failure",
+                himmelcloak::Error::UnsupportedFactor => "cannot start login: unsupported factor",
+                himmelcloak::Error::Crypto => "cannot start login: cryptographic failure",
+                himmelcloak::Error::InvalidConfiguration(_) => {
+                    "cannot start login: invalid configuration"
+                }
+                _ => "cannot start login: engine failure",
+            })?;
 
     loop {
         let answer = match step {
@@ -132,6 +188,7 @@ async fn login(config: Config) -> LoginResult<()> {
 
 pub fn run(path: &Path) -> LoginResult<()> {
     let config = load_config(path)?;
+    install_interrupt_handler()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -225,5 +282,220 @@ ca_bundle = "/work/tests/keycloak/.generated/ca.pem"
             parse_login_config(&credentials).err(),
             Some("invalid login configuration")
         );
+    }
+}
+#[cfg(test)]
+mod terminal_tests {
+    use std::{
+        fs::File,
+        io::{Read, Write},
+        os::fd::{AsRawFd, FromRawFd},
+        process::{Child, Command, Stdio},
+        time::{Duration, Instant},
+    };
+
+    use super::{install_interrupt_handler, read_input};
+
+    const SECRET: &str = "synthetic-terminal-test-password";
+
+    struct ChildGuard(Child);
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn settings(file: &File) -> libc::termios {
+        let mut value = std::mem::MaybeUninit::<libc::termios>::uninit();
+        // SAFETY: value points to writable storage for terminal settings.
+        assert_eq!(
+            unsafe { libc::tcgetattr(file.as_raw_fd(), value.as_mut_ptr()) },
+            0,
+            "cannot read test terminal settings"
+        );
+        // SAFETY: tcgetattr initialized value on success.
+        unsafe { value.assume_init() }
+    }
+
+    fn terminal_pair() -> (File, File) {
+        let mut master = -1;
+        let mut slave = -1;
+        // SAFETY: descriptor pointers are valid; optional arguments are null.
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            },
+            0,
+            "cannot create test terminal"
+        );
+        // SAFETY: openpty returned two owned, distinct descriptors.
+        unsafe { (File::from_raw_fd(master), File::from_raw_fd(slave)) }
+    }
+
+    fn read_available(master: &mut File, output: &mut Vec<u8>) {
+        let mut descriptor = libc::pollfd {
+            fd: master.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: descriptor points to one valid pollfd.
+        let ready = unsafe { libc::poll(&mut descriptor, 1, 20) };
+        assert!(ready >= 0, "terminal poll failed");
+
+        if ready > 0 && descriptor.revents & libc::POLLIN != 0 {
+            let mut buffer = [0_u8; 1024];
+            let count = master.read(&mut buffer).expect("read test terminal");
+            output.extend_from_slice(&buffer[..count]);
+            assert!(output.len() < 65_536, "unexpectedly large test output");
+        }
+    }
+
+    #[test]
+    #[ignore = "subprocess helper used by terminal_input_restores_echo"]
+    fn terminal_input_child() {
+        let Ok(mode) = std::env::var("HC79_TERMINAL_TEST") else {
+            return;
+        };
+
+        install_interrupt_handler().expect("install test interrupt handler");
+        let result = read_input("Password: ", true);
+
+        match mode.as_str() {
+            "success" => {
+                let value = result.expect("read synthetic password");
+                assert!(value.as_str() == SECRET, "unexpected password input");
+            }
+            "empty" => {
+                assert!(matches!(result, Err("input must not be empty")));
+            }
+            "eof" => {
+                assert!(matches!(result, Err("input ended before login completed")));
+            }
+            _ => panic!("signal should terminate the helper"),
+        }
+
+        println!("TERMINAL_TEST_DONE");
+    }
+
+    #[test]
+    fn terminal_input_restores_echo() {
+        for (mode, signal) in [
+            ("success", None),
+            ("empty", None),
+            ("eof", None),
+            ("sigint", Some(libc::SIGINT)),
+            ("sigterm", Some(libc::SIGTERM)),
+            ("sighup", Some(libc::SIGHUP)),
+        ] {
+            let (mut master, slave) = terminal_pair();
+
+            // Start with both echo flags enabled so restoration is observable.
+            let mut initial = settings(&slave);
+            initial.c_lflag |= libc::ECHO | libc::ECHONL;
+            // SAFETY: initial contains valid settings for the slave terminal.
+            assert_eq!(
+                unsafe { libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &initial) },
+                0,
+                "initialize test terminal"
+            );
+            let initial = settings(&slave);
+
+            let child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "test_login::terminal_tests::terminal_input_child",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("HC79_TERMINAL_TEST", mode)
+                .stdin(Stdio::from(slave.try_clone().unwrap()))
+                .stdout(Stdio::from(slave.try_clone().unwrap()))
+                .stderr(Stdio::from(slave.try_clone().unwrap()))
+                .spawn()
+                .expect("start terminal test helper");
+            let mut child = ChildGuard(child);
+            let mut output = Vec::new();
+
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !output.windows(10).any(|part| part == b"Password: ") {
+                assert!(Instant::now() < deadline, "{mode}: prompt timed out");
+                assert!(
+                    child.0.try_wait().unwrap().is_none(),
+                    "{mode}: helper exited before prompting"
+                );
+                read_available(&mut master, &mut output);
+            }
+
+            let hidden = settings(&slave);
+            assert_eq!(
+                hidden.c_lflag & (libc::ECHO | libc::ECHONL),
+                0,
+                "{mode}: password prompt appeared before echo was disabled"
+            );
+
+            if let Some(signal) = signal {
+                // SAFETY: this is the PID of our running subprocess.
+                assert_eq!(
+                    unsafe { libc::kill(child.0.id() as libc::pid_t, signal) },
+                    0,
+                    "signal test helper"
+                );
+            } else {
+                let input = match mode {
+                    "success" => format!("{SECRET}\n").into_bytes(),
+                    "empty" => b"\n".to_vec(),
+                    "eof" => vec![4],
+                    _ => unreachable!(),
+                };
+                master.write_all(&input).expect("send test input");
+            }
+
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let status = loop {
+                if let Some(status) = child.0.try_wait().unwrap() {
+                    break status;
+                }
+                assert!(Instant::now() < deadline, "{mode}: helper timed out");
+                read_available(&mut master, &mut output);
+            };
+
+            // Drain remaining output while keeping the slave open for inspection.
+            for _ in 0..5 {
+                read_available(&mut master, &mut output);
+            }
+
+            if signal.is_some() {
+                assert_eq!(status.code(), Some(130), "{mode}: wrong exit status");
+            } else {
+                assert!(status.success(), "{mode}: helper failed");
+                assert!(
+                    output
+                        .windows(b"TERMINAL_TEST_DONE".len())
+                        .any(|part| part == b"TERMINAL_TEST_DONE"),
+                    "{mode}: helper did not finish its assertions"
+                );
+            }
+
+            assert!(
+                !output
+                    .windows(SECRET.len())
+                    .any(|part| part == SECRET.as_bytes()),
+                "{mode}: password leaked into terminal output"
+            );
+
+            let restored = settings(&slave);
+            assert_eq!(
+                restored.c_lflag, initial.c_lflag,
+                "{mode}: terminal flags were not restored"
+            );
+        }
     }
 }

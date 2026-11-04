@@ -33,8 +33,58 @@ cargo run --locked -p himmelcloak-cli -- sync-users
 cargo run --locked -p himmelcloak-cli -- clear-state
 ```
 
-`config check` validates TOML syntax only. `test-login` and `clear-state` remain
-placeholders. `sync-users` now reads the configured group as described below.
+`config check` validates TOML syntax only. `clear-state` remains a placeholder.
+`test-login` runs an interactive native password login. `sync-users` reads the
+configured group as described below.
+
+### Test login
+
+Add a `[login]` table to `himmelcloak.toml` in the directory where you run
+the CLI. Existing tables, including `[sync]`, can remain in the file.
+
+```toml
+[login]
+server_url = "https://keycloak.example.org"
+realm = "example"
+client_id = "linux-login"
+# ca_bundle = "/absolute/path/to/private-keycloak-ca.pem"
+```
+
+Use a public client with the standard authorization-code flow enabled and
+this allowed redirect URI:
+
+```text
+http://127.0.0.1:8845/himmelcloak/callback
+```
+
+Direct access grants are not required. The server URL must use HTTPS.
+Set `ca_bundle` when the certificate requires a private CA; otherwise omit it.
+
+From the repository root, build using the native environment:
+
+```sh
+scripts/with-native.sh cargo build --locked -p himmelcloak-cli
+```
+
+From the directory containing `himmelcloak.toml`, run:
+
+```sh
+/absolute/path/to/target/debug/himmelcloak-cli test-login
+```
+
+Enter the username and password when prompted. Password input requires an
+interactive Unix terminal and is not echoed. Do not put the password in
+configuration files or command arguments.
+
+Success prints `himmelcloak-cli: login succeeded` and exits with status 0.
+Errors exit nonzero with a fixed message. Tokens and server-provided error
+details are not printed, and resulting tokens are not persisted.
+
+The command currently handles username and password challenges. OTP,
+WebAuthn, and required-action challenges are not supported by this command.
+
+The interrupt handler attempts to restore terminal settings before exiting
+with status 130 on Ctrl+C, SIGTERM, or SIGHUP.
 
 ### Group sync
 
