@@ -1,8 +1,8 @@
+use himmelcloak::config::Config;
+use himmelcloak::{Answer, AuthStep, Challenge, PublicClientApplication, Start};
+use serde::Deserialize;
 use std::io::{self, Write};
 use std::{fs, path::Path, path::PathBuf};
-
-use himmelcloak::config::Config;
-use serde::Deserialize;
 use zeroize::Zeroizing;
 
 type LoginResult<T> = Result<T, &'static str>;
@@ -90,4 +90,48 @@ fn read_input(prompt: &str, hidden: bool) -> LoginResult<Zeroizing<String>> {
     }
 
     Ok(value)
+}
+async fn login(config: Config) -> LoginResult<()> {
+    let client = PublicClientApplication::with_config(config)
+        .await
+        .map_err(|_| "cannot connect to Keycloak")?;
+
+    let (mut flow, mut step) = client
+        .initiate_auth_flow(Start::default())
+        .await
+        .map_err(|_| "cannot start login")?;
+
+    loop {
+        let answer = match step {
+            AuthStep::Complete(_) => return Ok(()),
+            AuthStep::Failed { .. } => return Err("login failed"),
+            AuthStep::Challenge(Challenge::Username) => {
+                let mut username = read_input("Username: ", false)?;
+                Answer::Username(std::mem::take(&mut *username))
+            }
+            AuthStep::Challenge(Challenge::Password) => {
+                let mut password = read_input("Password: ", true)?;
+                Answer::Password(std::mem::take(&mut *password))
+            }
+            _ => {
+                flow.cancel();
+                return Err("this command currently supports password login only");
+            }
+        };
+
+        step = client
+            .continue_auth_flow(&mut flow, answer)
+            .await
+            .map_err(|_| "login failed")?;
+    }
+}
+
+pub fn run(path: &Path) -> LoginResult<()> {
+    let config = load_config(path)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| "cannot start login runtime")?;
+
+    runtime.block_on(login(config))
 }
