@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: "24"
       - name: Validate renovate.json as repository config
-        run: npx --yes --package renovate@44.149.0 -- renovate-config-validator --no-global --strict renovate.json
+        run: npx --yes --package renovate@44.216.5 -- renovate-config-validator --no-global --strict renovate.json
       - name: Every pin is still found by its manager
         run: python3 scripts/check-renovate-pins.py
       - name: Pin checker tests
