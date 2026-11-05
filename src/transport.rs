@@ -465,7 +465,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::{mpsc, Arc};
-    use std::task::{Context, Poll, Wake, Waker};
+    use std::task::{Context, Poll, Waker};
     use std::thread;
 
     use super::{
@@ -475,8 +475,6 @@ mod tests {
     use crate::error::Error;
     use tokio::sync::Semaphore;
     use url::Url;
-
-    struct NoopWake;
 
     #[test]
     fn positive_submillisecond_deadline_keeps_a_finite_native_timeout() {
@@ -493,10 +491,6 @@ mod tests {
         );
     }
 
-    impl Wake for NoopWake {
-        fn wake(self: Arc<Self>) {}
-    }
-
     #[test]
     fn missing_tokio_runtime_returns_an_error() {
         let transport = CurlTransport {
@@ -506,8 +500,7 @@ mod tests {
         };
         let request = Request::get(Url::parse("http://127.0.0.1:9/").unwrap());
         let mut future = transport.send(request);
-        let waker = Waker::from(Arc::new(NoopWake));
-        let mut context = Context::from_waker(&waker);
+        let mut context = Context::from_waker(Waker::noop());
         assert!(matches!(
             future.as_mut().poll(&mut context),
             Poll::Ready(Err(Error::Transport(message))) if message == "Tokio runtime required"
