@@ -56,7 +56,9 @@ The server URL is the base URL before `/realms/<realm>` and may include a deploy
 prefix such as `/auth`. The group is an exact ID, not a group-name search.
 Provision a confidential client with service accounts enabled and read-only
 member access; disable its browser and password grants. Do not grant `manage-users`
-or `realm-admin`. The [architecture](Architecture.md#nss-group-synchronization)
+or `realm-admin`. On Keycloak 26.8.2 and later, also assign the built-in
+`kc-admin-api` client scope as a default scope; without it the Admin REST API
+rejects the service account's token with 401. The [architecture](Architecture.md#nss-group-synchronization)
 explains the fixture's read-only role and its limitations.
 
 The config must be a root-owned regular file without group/other write access
