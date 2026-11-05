@@ -255,7 +255,8 @@ Bearer tokens, request forms, and HTTP response bodies retain the core's existin
 zeroization behavior. No HTTP or disabled-certificate-verification option is exposed.
 
 The disposable fixture grants only the `realm-management` `view-users` role, without
-`manage-users` or `realm-admin`. This role permits realm-wide reads; group-only access
+`manage-users` or `realm-admin`. Both fixture clients carry the `kc-admin-api` default
+client scope, which Keycloak 26.8.2 and later require on any Admin REST API token. This role permits realm-wide reads; group-only access
 is enforced by the application's request scope, not by a claim of per-group server
 isolation. Deployments requiring server-enforced isolation should configure Keycloak
 fine-grained group permissions separately.
