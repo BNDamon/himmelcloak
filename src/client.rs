@@ -387,7 +387,7 @@ mod tests {
     use crate::error::{Error, Result};
     use crate::flow::classify::PageKind;
     use crate::flow::driver::{self, Callback};
-    use crate::flow::factor::{Factors, PageFactor};
+    use crate::flow::factor::{Builtin, Factors, PageFactor};
     use crate::flow::fetch::{Redirect, RedirectKind};
     use crate::flow::Tokens;
     use crate::flow::{Answer, AuthFlow, AuthStep, Challenge, OtpDevice, DEFAULT_LOGIN_TIMEOUT};
@@ -1146,6 +1146,8 @@ mod tests {
 
     const LOGIN_PAGE: &str = include_str!("../tests/fixtures/keycloak/base/login.html");
     const CODE_PAGE: &str = include_str!("../tests/fixtures/keycloak/base/login-otp-devices.html");
+    const WRONG_PASSWORD_PAGE: &str =
+        include_str!("../tests/fixtures/keycloak/keycloak.v2/login-wrong-password.html");
     const KEYCLOAK: &str = "https://keycloak.test:8443/realms/himmelcloak-test";
     const FIRST_DEVICE: &str = "00000000-0000-4000-8000-000000000001";
     const SECOND_DEVICE: &str = "00000000-0000-4000-8000-000000000002";
@@ -1168,7 +1170,9 @@ mod tests {
         fn challenges(&self, kind: &PageKind, login_hint: Option<&str>) -> Result<Vec<Challenge>> {
             Ok(match kind {
                 _ if self.asks_nothing => Vec::new(),
-                PageKind::UsernamePassword if login_hint.is_some() => vec![Challenge::Password],
+                PageKind::UsernamePassword { .. } if login_hint.is_some() => {
+                    vec![Challenge::Password]
+                }
                 PageKind::OneTimeCode { devices } => vec![Challenge::OneTimeCode {
                     devices: devices
                         .iter()
@@ -1280,6 +1284,81 @@ mod tests {
             Ok(_) => panic!("expected a challenge"),
             Err(error) => panic!("expected a challenge, got {error:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn the_password_handler_completes_a_login_through_the_driver() {
+        let (client, endpoint, mut flow) = keycloak(DEFAULT_LOGIN_TIMEOUT, |flow| {
+            let fixture = nonce_fixture();
+            vec![
+                page(LOGIN_PAGE),
+                redirect(&callback_for(flow)),
+                reply(200, &token_response(&fixture["token"])),
+            ]
+        });
+        let first = driver::begin(&client, &Builtin, &Start::default(), &mut flow).await;
+        assert!(matches!(challenge(first), Challenge::Username));
+        let next = driver::advance(
+            &client,
+            &Builtin,
+            &mut flow,
+            Answer::Username("alice".into()),
+        );
+        assert!(matches!(challenge(next.await), Challenge::Password));
+        let password = Answer::Password("synthetic-password".into());
+        let Ok(AuthStep::Complete(tokens)) =
+            driver::advance(&client, &Builtin, &mut flow, password).await
+        else {
+            panic!("the password page must lead to the callback");
+        };
+        assert_eq!(tokens.verified_subject.as_deref(), Some("alice"));
+        // Charter Table 2: the answers plus the page's own credentialId.
+        let form = posted(&sent(&endpoint)[1].1);
+        assert_eq!(form["username"], "alice");
+        assert_eq!(form["password"], "synthetic-password");
+        assert_eq!(form["credentialId"], "");
+        assert_eq!(form.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_login_hint_skips_the_username_challenge() {
+        let (client, _, mut flow) = keycloak(DEFAULT_LOGIN_TIMEOUT, |_| vec![page(LOGIN_PAGE)]);
+        let start = Start {
+            login_hint: Some("alice".to_owned()),
+            ..Start::default()
+        };
+        let first = driver::begin(&client, &Builtin, &start, &mut flow).await;
+        assert!(matches!(challenge(first), Challenge::Password));
+    }
+
+    #[tokio::test]
+    async fn a_wrong_password_ends_the_login_as_failed() {
+        let (client, endpoint, _) = keycloak(DEFAULT_LOGIN_TIMEOUT, |_| {
+            vec![page(LOGIN_PAGE), page(WRONG_PASSWORD_PAGE)]
+        });
+        let (mut flow, first) = client.initiate_auth_flow(Start::default()).await.unwrap();
+        assert!(matches!(challenge(Ok(first)), Challenge::Username));
+        let next = client
+            .continue_auth_flow(&mut flow, Answer::Username("alice".into()))
+            .await;
+        assert!(matches!(challenge(next), Challenge::Password));
+        let step = client
+            .continue_auth_flow(&mut flow, Answer::Password("wrong-password".into()))
+            .await;
+        let Ok(AuthStep::Failed { reason }) = step else {
+            panic!("a wrong password must end the login as failed");
+        };
+        assert_eq!(reason, "Invalid username or password.");
+        // The login is over: nothing more is sent, and later answers are refused.
+        assert!(!flow.is_active());
+        assert_eq!(
+            client
+                .continue_auth_flow(&mut flow, Answer::Password("again".into()))
+                .await
+                .err(),
+            Some(Error::Protocol("login flow failed"))
+        );
+        assert_eq!(sent(&endpoint).len(), 2);
     }
 
     #[tokio::test]
@@ -1777,7 +1856,7 @@ mod tests {
     #[tokio::test]
     async fn initiate_starts_a_login_only_where_a_factor_handles_the_page() {
         let (client, endpoint, _) = keycloak(DEFAULT_LOGIN_TIMEOUT, |_| {
-            vec![page(LOGIN_PAGE), page(LOGIN_PAGE)]
+            vec![page(LOGIN_PAGE), page(LOGIN_PAGE), page(CODE_PAGE)]
         });
         let (mut flow, first) = client
             .initiate_with(&Stub::default(), &Start::default())
@@ -1785,11 +1864,16 @@ mod tests {
             .unwrap();
         assert!(matches!(challenge(Ok(first)), Challenge::Username));
         assert!(flow.is_active());
+        // The built-in password handler takes the login page.
+        let (mut flow, first) = client.initiate_auth_flow(Start::default()).await.unwrap();
+        assert!(matches!(challenge(Ok(first)), Challenge::Username));
+        assert!(flow.is_active());
+        // No built-in handler takes the one-time-code page yet.
         assert_eq!(
             client.initiate_auth_flow(Start::default()).await.err(),
             Some(Error::UnsupportedFactor)
         );
-        assert_eq!(sent(&endpoint).len(), 2);
+        assert_eq!(sent(&endpoint).len(), 3);
     }
 
     #[tokio::test]

@@ -64,10 +64,20 @@ ends the login as expired, a page is presented only if it returned 200, and
 only the client that began a login can continue it. Any refusal, error, or step
 dropped mid-request ends the login as failed. Each handler also receives
 `Start::login_hint`, so it can skip asking a username Keycloak already filled
-in. No factor handler is
-registered yet, so a real login stops at its first page with
-`UnsupportedFactor`; the password and one-time-code handlers plug in as their
-slices land.
+in.
+
+The password handler (`PasswordFactor` in `src/flow/factor.rs`) takes Keycloak's
+combined username-and-password page (`login.ftl`). It asks `Username`, unless
+the login hint filled it in, then `Password`, and posts both; `credentialId`
+keeps the page's own value (charter Table 2). When Keycloak refuses the answers
+it sends the login page back with a field error: `input-error` in the `base`
+theme, `input-error-<field>` in `keycloak.v2`. The classifier keys on those
+element IDs, never on the text, and the driver then ends the login with
+`AuthStep::Failed` carrying Keycloak's message, cleaned of control characters
+for the terminal. The caller starts a new login to try again. Identity-first
+pages and update-password are later password-slice work. A page without a
+handler, such as the one-time-code page until its slice lands, still ends the
+login with `UnsupportedFactor`.
 
 Page fetching (`src/flow/fetch.rs`) is in place beneath the driver. Each
 `AuthFlow` owns its own cookie jar, which keeps libcurl's cookie lines per exact
@@ -166,7 +176,7 @@ Docker. See [Testing](Testing.md).
 
 | Method | Intended mechanism | Current status |
 | --- | --- | --- |
-| Password | Direct Access Grant; later native flow | Direct grant implemented; native flow driver in place, password page handler pending; login form and code exchange live-tested with direct grants disabled |
+| Password | Direct Access Grant; native flow | Direct grant implemented; native username-and-password login through the public API, live-tested with direct grants disabled; identity-first and update-password pending |
 | TOTP / HOTP | wolfCrypt HMAC generation and verification; Direct Access Grant; later native flow | SHA-1, SHA-256, and SHA-512 generation and verification implemented; Keycloak credential persistence and live TOTP fixture pending |
 | WebAuthn / passkeys | Native flow and authenticator adapter | Virtual adapter and seeded live assertion fixture implemented; public native flow pending |
 | SMS / email OTP | Native flow | Planned |
