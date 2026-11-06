@@ -24,3 +24,9 @@ mod sync_users;
 
 #[cfg(unix)]
 pub use sync_users::run as run_sync_users;
+
+#[cfg(unix)]
+mod test_login;
+
+#[cfg(unix)]
+pub use test_login::run as run_test_login;

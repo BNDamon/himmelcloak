@@ -47,8 +47,24 @@ fn main() -> ExitCode {
             }
         },
         Ok(Command::TestLogin) => {
-            println!("himmelcloak-cli: test-login is not implemented yet");
-            ExitCode::SUCCESS
+            #[cfg(unix)]
+            {
+                match himmelcloak_cli::run_test_login(Path::new("himmelcloak.toml")) {
+                    Ok(()) => {
+                        println!("himmelcloak-cli: login succeeded");
+                        ExitCode::SUCCESS
+                    }
+                    Err(message) => {
+                        eprintln!("himmelcloak-cli: {message}");
+                        ExitCode::FAILURE
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                eprintln!("himmelcloak-cli: test-login requires Unix");
+                ExitCode::FAILURE
+            }
         }
         Ok(Command::SyncUsers) => {
             #[cfg(unix)]
