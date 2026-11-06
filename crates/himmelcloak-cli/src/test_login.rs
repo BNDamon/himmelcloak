@@ -18,7 +18,7 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
- 
+
 use himmelcloak::config::Config;
 use himmelcloak::{Answer, AuthStep, Challenge, PublicClientApplication, Start};
 use serde::Deserialize;
@@ -58,14 +58,14 @@ fn parse_login_config(source: &str) -> LoginResult<Config> {
 }
 static SAVED_TERMINAL: std::sync::Mutex<Option<libc::termios>> = std::sync::Mutex::new(None);
 
-fn restore_terminal() -> LoginResult<()> {
+fn restore_terminal(action: libc::c_int) -> LoginResult<()> {
     let mut saved = SAVED_TERMINAL
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     if let Some(original) = saved.as_ref() {
         // SAFETY: original was obtained from this terminal descriptor.
-        if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, original) } != 0 {
+        if unsafe { libc::tcsetattr(libc::STDIN_FILENO, action, original) } != 0 {
             return Err("cannot restore terminal settings");
         }
         *saved = None;
@@ -78,7 +78,7 @@ struct RestoreEcho;
 
 impl Drop for RestoreEcho {
     fn drop(&mut self) {
-        let _ = restore_terminal();
+        let _ = restore_terminal(libc::TCSAFLUSH);
     }
 }
 
@@ -122,7 +122,7 @@ fn hide_echo() -> LoginResult<RestoreEcho> {
 
 fn install_interrupt_handler() -> LoginResult<()> {
     ctrlc::try_set_handler(|| {
-        let _ = restore_terminal();
+        let _ = restore_terminal(libc::TCSAFLUSH);
         std::process::exit(130);
     })
     .map_err(|_| "cannot install login interrupt handler")
@@ -139,7 +139,7 @@ fn read_input(prompt: &str, hidden: bool) -> LoginResult<Zeroizing<String>> {
     let result = io::stdin().read_line(&mut value);
 
     if hidden {
-        restore_terminal()?;
+        restore_terminal(libc::TCSANOW)?;
     }
     drop(restore);
 
@@ -463,6 +463,9 @@ mod terminal_tests {
             );
 
             if let Some(signal) = signal {
+                master
+                    .write_all(SECRET.as_bytes())
+                    .expect("queue partial password without pressing Enter");
                 // SAFETY: this is the PID of our running subprocess.
                 assert_eq!(
                     unsafe { libc::kill(child.0.id() as libc::pid_t, signal) },
@@ -495,6 +498,27 @@ mod terminal_tests {
 
             if signal.is_some() {
                 assert_eq!(status.code(), Some(130), "{mode}: wrong exit status");
+                // The next terminal reader should receive only the new newline.
+                master.write_all(b"\n").expect("submit next terminal line");
+
+                let mut descriptor = libc::pollfd {
+                    fd: slave.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: descriptor points to one valid pollfd.
+                let ready = unsafe { libc::poll(&mut descriptor, 1, 1_000) };
+                assert!(
+                    ready > 0 && descriptor.revents & libc::POLLIN != 0,
+                    "{mode}: next terminal line was not readable"
+                );
+
+                let mut buffer = [0_u8; 128];
+                let count = (&slave).read(&mut buffer).expect("read next terminal line");
+                assert!(
+                    &buffer[..count] == b"\n",
+                    "{mode}: pending password input survived the interrupt"
+                );
             } else {
                 assert!(status.success(), "{mode}: helper failed");
                 assert!(
