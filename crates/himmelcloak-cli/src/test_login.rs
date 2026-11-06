@@ -181,17 +181,25 @@ async fn login(config: Config) -> LoginResult<()> {
                 }
                 _ => "cannot start login: engine failure",
             })?;
+    let mut password_submitted = false;
 
     loop {
         let answer = match step {
             AuthStep::Complete(_) => return Ok(()),
             AuthStep::Failed { .. } => return Err("login failed"),
+            AuthStep::Challenge(Challenge::Username | Challenge::Password)
+                if password_submitted =>
+            {
+                flow.cancel();
+                return Err("login failed");
+            }
             AuthStep::Challenge(Challenge::Username) => {
                 let mut username = read_input("Username: ", false)?;
                 Answer::Username(std::mem::take(&mut *username))
             }
             AuthStep::Challenge(Challenge::Password) => {
                 let mut password = read_input("Password: ", true)?;
+                password_submitted = true;
                 Answer::Password(std::mem::take(&mut *password))
             }
             _ => {
