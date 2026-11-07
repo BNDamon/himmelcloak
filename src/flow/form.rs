@@ -25,6 +25,11 @@
 //! page (charter section 2.6.4). Only the fields charter Table 2 lists for that page are posted:
 //! `username`, `password`, `credentialId` on the login page; `otp`, `selectedCredentialId` on the
 //! code page. Anything else is refused before a request is sent.
+//!
+//! A post that never reached Keycloak (`Error::Unreachable`: no connection was made and nothing
+//! was sent) is sent once more after a short pause. Any other failure may have reached Keycloak,
+//! where a second post could count another attempt or replay the session code, so it is
+//! returned as is.
 use core::fmt;
 
 use url::Url;
@@ -40,6 +45,8 @@ const OTP_POSTED: &[&str] = &["otp", "selectedCredentialId"];
 const ACTION_PATH_SUFFIX: &str = "/login-actions/authenticate";
 /// Query values Keycloak puts on every form action; each must appear exactly once.
 const ACTION_QUERY: &[&str] = &["session_code", "execution", "client_id", "tab_id"];
+/// Pause before the one retry of a form that never reached Keycloak.
+const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// A page's form, ready to be filled in and posted back.
 pub(crate) struct Form {
@@ -184,7 +191,15 @@ impl Form {
                 (name.as_str(), answer.unwrap_or(value.as_str()))
             })
             .collect();
-        fetch::post_form(transport, jar, self.action.clone(), &values).await
+        match fetch::post_form(transport, jar, self.action.clone(), &values).await {
+            // The form never reached Keycloak, so sending it once more cannot count a second
+            // attempt or replay the session code. Any other failure may have reached it.
+            Err(Error::Unreachable(_)) => {
+                tokio::time::sleep(RETRY_DELAY).await;
+                fetch::post_form(transport, jar, self.action.clone(), &values).await
+            }
+            sent => sent,
+        }
     }
 }
 
@@ -215,6 +230,7 @@ impl fmt::Debug for Form {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Mutex;
@@ -247,10 +263,12 @@ mod tests {
     /// Each request's URL and decoded form body.
     type Sent = Vec<(Url, Vec<(String, String)>)>;
 
-    /// Records each request and answers it with an empty page.
+    /// Records each request and answers it with an empty page, after first failing with each of
+    /// `failures` in turn.
     #[derive(Default)]
     struct Recorder {
         sent: Mutex<Sent>,
+        failures: Mutex<VecDeque<Error>>,
     }
 
     impl HttpTransport for Recorder {
@@ -262,13 +280,17 @@ mod tests {
                 .into_owned()
                 .collect();
             self.sent.lock().unwrap().push((request.url.clone(), body));
-            Box::pin(async {
-                Ok(Response {
-                    status: 200,
-                    headers: Vec::new(),
-                    body: b"<html></html>".to_vec(),
-                    cookies: Vec::new(),
-                })
+            let failure = self.failures.lock().unwrap().pop_front();
+            Box::pin(async move {
+                match failure {
+                    Some(error) => Err(error),
+                    None => Ok(Response {
+                        status: 200,
+                        headers: Vec::new(),
+                        body: b"<html></html>".to_vec(),
+                        cookies: Vec::new(),
+                    }),
+                }
             })
         }
     }
@@ -304,6 +326,48 @@ mod tests {
         let mut jar = CookieJar::default();
         let result = form.submit(&recorder, &mut jar, answers).await;
         (result, recorder)
+    }
+
+    /// Submit alice's login form to a Keycloak that first fails with `failures`.
+    async fn submit_through(failures: Vec<Error>) -> (Result<Fetched>, Sent) {
+        let recorder = Recorder {
+            failures: Mutex::new(failures.into()),
+            ..Recorder::default()
+        };
+        let mut jar = CookieJar::default();
+        let answers = [("username", "alice"), ("password", "synthetic-password")];
+        let result = form(BASE_LOGIN).submit(&recorder, &mut jar, &answers).await;
+        (result, recorder.sent.into_inner().unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_form_that_never_reached_keycloak_is_sent_once_more() {
+        let unreachable = || Error::Unreachable("connection refused".to_owned());
+        let (result, sent) = submit_through(vec![unreachable()]).await;
+        assert!(matches!(result, Ok(Fetched::Page(_))));
+        assert_eq!(sent.len(), 2);
+        assert_eq!(
+            sent[0], sent[1],
+            "the retry sends the same form to the same action"
+        );
+
+        // Only one retry: a second failure to connect is the result.
+        let (result, sent) = submit_through(vec![unreachable(), unreachable()]).await;
+        assert_eq!(result.err(), Some(unreachable()));
+        assert_eq!(sent.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_form_that_may_have_reached_keycloak_is_never_resent() {
+        for failure in [
+            Error::Transport("HTTP request timed out".to_owned()),
+            Error::Transport("SSL certificate problem".to_owned()),
+            Error::HttpStatus(503),
+        ] {
+            let (result, sent) = submit_through(vec![failure.clone()]).await;
+            assert_eq!(result.err(), Some(failure));
+            assert_eq!(sent.len(), 1);
+        }
     }
 
     #[test]

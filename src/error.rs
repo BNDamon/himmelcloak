@@ -26,6 +26,10 @@ use core::fmt;
 pub enum Error {
     InvalidConfiguration(&'static str),
     Transport(String),
+    /// The request never reached Keycloak: its host name did not resolve, or no connection
+    /// could be made, and no byte of the request was sent. Unlike `Transport`, repeating the
+    /// request is safe. Certificate and TLS failures are never this.
+    Unreachable(String),
     TlsBackend,
     HttpStatus(u32),
     AuthenticationRejected,
@@ -43,6 +47,7 @@ impl fmt::Display for Error {
         match self {
             Self::InvalidConfiguration(reason) => write!(f, "invalid configuration: {reason}"),
             Self::Transport(reason) => write!(f, "transport error: {reason}"),
+            Self::Unreachable(reason) => write!(f, "Keycloak unreachable: {reason}"),
             Self::TlsBackend => write!(f, "libcurl is not using wolfSSL"),
             Self::HttpStatus(status) => write!(f, "unexpected HTTP status {status}"),
             Self::AuthenticationRejected => write!(f, "authentication rejected"),
@@ -60,3 +65,41 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 pub type Result<T> = core::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn every_error_has_a_readable_message() {
+        for (error, message) in [
+            (
+                Error::InvalidConfiguration("no realm"),
+                "invalid configuration: no realm",
+            ),
+            (Error::Transport("reset".into()), "transport error: reset"),
+            (
+                Error::Unreachable("refused".into()),
+                "Keycloak unreachable: refused",
+            ),
+            (Error::TlsBackend, "libcurl is not using wolfSSL"),
+            (Error::HttpStatus(503), "unexpected HTTP status 503"),
+            (Error::AuthenticationRejected, "authentication rejected"),
+            (Error::Protocol("bad page"), "OIDC protocol error: bad page"),
+            (
+                Error::TokenValidation("expired"),
+                "token validation failed: expired",
+            ),
+            (Error::Crypto, "wolfCrypt operation failed"),
+            (
+                Error::UnsupportedFactor,
+                "authentication factor not supported",
+            ),
+            (Error::Cancelled, "login cancelled"),
+            (Error::Expired, "login expired"),
+            (Error::NotImplemented, "not implemented"),
+        ] {
+            assert_eq!(error.to_string(), message);
+        }
+    }
+}

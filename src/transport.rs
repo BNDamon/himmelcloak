@@ -446,7 +446,18 @@ fn send_blocking(
     if oversized.get() {
         return Err(Error::Protocol("HTTP response too large"));
     }
-    transfer_result.map_err(curl_error)?;
+    transfer_result.map_err(|error| {
+        // Only a failure before the connection existed, with nothing sent, is safe to repeat.
+        if sent_bytes == 0
+            && (error.is_couldnt_resolve_host()
+                || error.is_couldnt_resolve_proxy()
+                || error.is_couldnt_connect())
+        {
+            Error::Unreachable(error.to_string())
+        } else {
+            curl_error(error)
+        }
+    })?;
     response.status = easy.response_code().map_err(curl_error)?;
     for cookie in easy.cookies().map_err(curl_error)?.iter() {
         let cookie =
@@ -736,6 +747,31 @@ mod tests {
                 ));
             }
         }
+    }
+
+    #[test]
+    fn only_a_connection_never_made_is_unreachable() {
+        let timeout = std::time::Duration::from_secs(5);
+        let form = |url: &Url| Request::form(url.clone(), &[("password", "synthetic")]).unwrap();
+
+        // Nothing listens on the port: the connection is refused before a byte is sent.
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = Url::parse(&format!("http://{}/", closed.local_addr().unwrap())).unwrap();
+        drop(closed);
+        let refused = send_blocking(form(&url), None, timeout);
+        assert!(matches!(refused, Err(Error::Unreachable(_))));
+
+        // The server takes the request and closes without answering: it may have acted on it.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+        });
+        let dropped = send_blocking(form(&url), None, timeout);
+        server.join().unwrap();
+        assert!(matches!(dropped, Err(Error::Transport(_))));
     }
 
     #[test]
