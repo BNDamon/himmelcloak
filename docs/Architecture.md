@@ -99,6 +99,15 @@ login page; `otp`, `selectedCredentialId` on the code page), starting from the
 page's own values. An answer for a field the page lacks, a repeated answer, or a
 device the page did not offer is refused before anything is sent.
 
+A form post that never reached Keycloak is sent once more after 250 ms. The
+transport reports that case as `Error::Unreachable`: the host name did not
+resolve or no connection could be made, and no byte of the request was sent.
+Every other failure (a timeout, a dropped connection, a certificate or TLS
+error, an HTTP error status) may have reached Keycloak, where a second post
+could count another password attempt or replay the session code, so it is
+returned as is and ends the login. Network faults beyond this one retry are
+tested separately (charter Table 26).
+
 Code exchange (`PublicClientApplication::exchange_code` in `src/client.rs`)
 redeems the callback's code at the token endpoint as a public client, sending
 `grant_type=authorization_code`, the code, the exact `redirect_uri` string the

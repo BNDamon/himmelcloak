@@ -32,8 +32,14 @@ realm's `himmelcloak-browser-only` client: Keycloak first refuses the password
 grant for it, then alice signs in by answering username and password, signs in
 again with a login hint that skips the username, and a wrong password ends the
 login as `Failed` with Keycloak's message.
-The suite runs `cargo test --features webauthn-virtual --lib --test live_keycloak -- --ignored`, so it also
-runs the library's live scenarios in `src/flow/live.rs`. Those cover the pieces
+`cli_test_login_completes_a_password_login_end_to_end` in
+`crates/himmelcloak-cli/tests/live_keycloak.rs` runs the real `himmelcloak-cli test-login`
+binary in a pseudo-terminal on the same client: alice's username and password at its prompts
+print `login succeeded` and exit 0, a wrong password prints `login failed` and exits 1, and
+neither run prints the password or a token.
+The suite runs `cargo test --workspace --features webauthn-virtual --lib --test live_keycloak -- --ignored`,
+so it also runs every workspace crate's `live_keycloak` tests and the library's live scenarios in
+`src/flow/live.rs`. Those cover the pieces
 underneath the public API, such
 as submitting the login form: a correct password reaches the registered callback
 with a code, and a wrong one returns the login page. The code exchange scenario
