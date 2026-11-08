@@ -446,18 +446,7 @@ fn send_blocking(
     if oversized.get() {
         return Err(Error::Protocol("HTTP response too large"));
     }
-    transfer_result.map_err(|error| {
-        // Only a failure before the connection existed, with nothing sent, is safe to repeat.
-        if sent_bytes == 0
-            && (error.is_couldnt_resolve_host()
-                || error.is_couldnt_resolve_proxy()
-                || error.is_couldnt_connect())
-        {
-            Error::Unreachable(error.to_string())
-        } else {
-            curl_error(error)
-        }
-    })?;
+    transfer_result.map_err(|error| transfer_error(error, sent_bytes))?;
     response.status = easy.response_code().map_err(curl_error)?;
     for cookie in easy.cookies().map_err(curl_error)?.iter() {
         let cookie =
@@ -471,6 +460,18 @@ fn curl_error(error: curl::Error) -> Error {
     Error::Transport(error.to_string())
 }
 
+/// Only a failure before any connection existed, with nothing sent, is safe to repeat.
+fn transfer_error(error: curl::Error, sent_bytes: usize) -> Error {
+    let never_connected = error.is_couldnt_resolve_host()
+        || error.is_couldnt_resolve_proxy()
+        || error.is_couldnt_connect();
+    if never_connected && sent_bytes == 0 {
+        Error::Unreachable(error.to_string())
+    } else {
+        curl_error(error)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::{Read, Write};
@@ -480,8 +481,8 @@ mod tests {
     use std::thread;
 
     use super::{
-        active_wolfssl, curl_timeout, send_blocking, CurlTransport, HttpTransport, Request,
-        SecretHeaderList, MAX_HEADERS, MAX_RESPONSE,
+        active_wolfssl, curl_timeout, send_blocking, transfer_error, CurlTransport, HttpTransport,
+        Request, SecretHeaderList, MAX_HEADERS, MAX_RESPONSE,
     };
     use crate::error::Error;
     use tokio::sync::Semaphore;
@@ -746,6 +747,35 @@ mod tests {
                     Err(Error::Protocol("HTTP response too large"))
                 ));
             }
+        }
+    }
+
+    #[test]
+    fn every_never_connected_failure_and_only_those_is_unreachable() {
+        let unreachable = |code, sent| {
+            matches!(
+                transfer_error(curl::Error::new(code), sent),
+                Error::Unreachable(_)
+            )
+        };
+        for code in [
+            curl_sys::CURLE_COULDNT_RESOLVE_HOST,
+            curl_sys::CURLE_COULDNT_RESOLVE_PROXY,
+            curl_sys::CURLE_COULDNT_CONNECT,
+        ] {
+            assert!(unreachable(code, 0), "{code}");
+            // Once any byte went out, Keycloak may have the request: never repeat it.
+            assert!(!unreachable(code, 1), "{code}");
+        }
+        for code in [
+            curl_sys::CURLE_OPERATION_TIMEDOUT,
+            curl_sys::CURLE_PEER_FAILED_VERIFICATION,
+            curl_sys::CURLE_SSL_CONNECT_ERROR,
+            curl_sys::CURLE_GOT_NOTHING,
+            curl_sys::CURLE_SEND_ERROR,
+            curl_sys::CURLE_RECV_ERROR,
+        ] {
+            assert!(!unreachable(code, 0), "{code}");
         }
     }
 
