@@ -28,6 +28,7 @@
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
@@ -60,11 +61,26 @@ impl Drop for WorkDir {
     }
 }
 
+/// A fresh private directory with an unpredictable name. Creation fails rather than reuse a
+/// path someone else made first, so nothing planted there (such as a symlink) is followed.
+fn private_dir(name: &str) -> PathBuf {
+    let mut random = [0_u8; 16];
+    File::open("/dev/urandom")
+        .and_then(|mut source| source.read_exact(&mut random))
+        .expect("read random bytes for the scratch directory name");
+    let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+    let path = std::env::temp_dir().join(format!("himmelcloak-cli-{name}-{suffix}"));
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&path)
+        .expect("create a new private scratch directory");
+    path
+}
+
 fn work_dir(name: &str) -> WorkDir {
     let server = std::env::var("KEYCLOAK_URL").expect("KEYCLOAK_URL must be set for live tests");
     let ca = std::env::var("KEYCLOAK_CA").expect("KEYCLOAK_CA must be set for live tests");
-    let path = std::env::temp_dir().join(format!("himmelcloak-cli-{name}-{}", std::process::id()));
-    fs::create_dir_all(&path).unwrap();
+    let path = private_dir(name);
     let mut login = toml::Table::new();
     for (key, value) in [
         ("server_url", server.as_str()),
@@ -76,11 +92,13 @@ fn work_dir(name: &str) -> WorkDir {
     }
     let mut config = toml::Table::new();
     config.insert("login".into(), toml::Value::Table(login));
-    fs::write(
-        path.join("himmelcloak.toml"),
-        toml::to_string(&config).unwrap(),
-    )
-    .unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path.join("himmelcloak.toml"))
+        .and_then(|mut file| file.write_all(toml::to_string(&config).unwrap().as_bytes()))
+        .expect("write the scratch configuration");
     WorkDir(path)
 }
 
