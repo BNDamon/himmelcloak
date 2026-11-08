@@ -31,6 +31,7 @@
 //! where a second post could count another attempt or replay the session code, so it is
 //! returned as is.
 use core::fmt;
+use std::time::{Duration, Instant};
 
 use url::Url;
 use zeroize::Zeroizing;
@@ -46,7 +47,7 @@ const ACTION_PATH_SUFFIX: &str = "/login-actions/authenticate";
 /// Query values Keycloak puts on every form action; each must appear exactly once.
 const ACTION_QUERY: &[&str] = &["session_code", "execution", "client_id", "tab_id"];
 /// Pause before the one retry of a form that never reached Keycloak.
-const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
+const RETRY_DELAY: Duration = Duration::from_millis(250);
 
 /// A page's form, ready to be filled in and posted back.
 pub(crate) struct Form {
@@ -162,11 +163,14 @@ fn check_action(page: &Url, action: &Url) -> Result<()> {
 impl Form {
     /// Post the form with `answers` filled in. Each answer must name a field the page has, at
     /// most once, and a chosen device must be one the page offers; otherwise nothing is sent.
+    /// `deadline` is the login's time limit (`AuthFlow::deadline`): a retry is never sent after
+    /// it.
     pub(crate) async fn submit(
         &self,
         transport: &dyn HttpTransport,
         jar: &mut CookieJar,
         answers: &[(&str, &str)],
+        deadline: Instant,
     ) -> Result<Fetched> {
         for (i, (name, value)) in answers.iter().enumerate() {
             if !self.fields.iter().any(|(field, _)| field == name) {
@@ -196,6 +200,10 @@ impl Form {
             // attempt or replay the session code. Any other failure may have reached it.
             Err(Error::Unreachable(_)) => {
                 tokio::time::sleep(RETRY_DELAY).await;
+                // The answers must never reach Keycloak after the login has expired.
+                if Instant::now() >= deadline {
+                    return Err(Error::Expired);
+                }
                 fetch::post_form(transport, jar, self.action.clone(), &values).await
             }
             sent => sent,
@@ -234,10 +242,11 @@ mod tests {
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Mutex;
+    use std::time::{Duration, Instant};
 
     use url::Url;
 
-    use super::{extract, Form};
+    use super::{extract, Form, RETRY_DELAY};
     use crate::error::{Error, Result};
     use crate::flow::classify::PageKind;
     use crate::flow::fetch::{CookieJar, Fetched, Page};
@@ -321,29 +330,47 @@ mod tests {
         format!("{}{action}{}", &html[..start], &html[end..])
     }
 
+    /// A login deadline well clear of every test.
+    fn later() -> Instant {
+        Instant::now() + Duration::from_secs(60)
+    }
+
     async fn submit(form: &Form, answers: &[(&str, &str)]) -> (Result<Fetched>, Recorder) {
         let recorder = Recorder::default();
         let mut jar = CookieJar::default();
-        let result = form.submit(&recorder, &mut jar, answers).await;
+        let result = form.submit(&recorder, &mut jar, answers, later()).await;
         (result, recorder)
     }
 
-    /// Submit alice's login form to a Keycloak that first fails with `failures`.
-    async fn submit_through(failures: Vec<Error>) -> (Result<Fetched>, Sent) {
+    /// Submit alice's login form, for a login ending at `deadline`, to a Keycloak that first
+    /// fails with `failures`.
+    async fn submit_through(failures: Vec<Error>, deadline: Instant) -> (Result<Fetched>, Sent) {
         let recorder = Recorder {
             failures: Mutex::new(failures.into()),
             ..Recorder::default()
         };
         let mut jar = CookieJar::default();
         let answers = [("username", "alice"), ("password", "synthetic-password")];
-        let result = form(BASE_LOGIN).submit(&recorder, &mut jar, &answers).await;
+        let result = form(BASE_LOGIN)
+            .submit(&recorder, &mut jar, &answers, deadline)
+            .await;
         (result, recorder.sent.into_inner().unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_retry_is_never_sent_after_the_login_expires() {
+        // The login runs out during the pause before the retry.
+        let deadline = Instant::now() + RETRY_DELAY / 2;
+        let unreachable = Error::Unreachable("connection refused".to_owned());
+        let (result, sent) = submit_through(vec![unreachable], deadline).await;
+        assert_eq!(result.err(), Some(Error::Expired));
+        assert_eq!(sent.len(), 1, "only the first post may be sent");
     }
 
     #[tokio::test]
     async fn a_form_that_never_reached_keycloak_is_sent_once_more() {
         let unreachable = || Error::Unreachable("connection refused".to_owned());
-        let (result, sent) = submit_through(vec![unreachable()]).await;
+        let (result, sent) = submit_through(vec![unreachable()], later()).await;
         assert!(matches!(result, Ok(Fetched::Page(_))));
         assert_eq!(sent.len(), 2);
         assert_eq!(
@@ -352,7 +379,7 @@ mod tests {
         );
 
         // Only one retry: a second failure to connect is the result.
-        let (result, sent) = submit_through(vec![unreachable(), unreachable()]).await;
+        let (result, sent) = submit_through(vec![unreachable(), unreachable()], later()).await;
         assert_eq!(result.err(), Some(unreachable()));
         assert_eq!(sent.len(), 2);
     }
@@ -364,7 +391,7 @@ mod tests {
             Error::Transport("SSL certificate problem".to_owned()),
             Error::HttpStatus(503),
         ] {
-            let (result, sent) = submit_through(vec![failure.clone()]).await;
+            let (result, sent) = submit_through(vec![failure.clone()], later()).await;
             assert_eq!(result.err(), Some(failure));
             assert_eq!(sent.len(), 1);
         }

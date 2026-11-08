@@ -277,6 +277,11 @@ impl AuthFlow {
         self.nonce.as_str()
     }
 
+    /// When the login's time limit runs out. Nothing may be sent to Keycloak after it.
+    pub(crate) fn deadline(&self) -> Instant {
+        self.deadline
+    }
+
     fn clear_secrets(&mut self) {
         self.pkce_verifier.zeroize();
         self.oauth_state.zeroize();

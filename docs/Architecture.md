@@ -99,7 +99,9 @@ login page; `otp`, `selectedCredentialId` on the code page), starting from the
 page's own values. An answer for a field the page lacks, a repeated answer, or a
 device the page did not offer is refused before anything is sent.
 
-A form post that never reached Keycloak is sent once more after 250 ms. The
+A form post that never reached Keycloak is sent once more after 250 ms, unless
+the login's time limit has passed by then: answers are never sent after the
+login expires, and the step ends with `Expired`. The
 transport reports that case as `Error::Unreachable`: the host name did not
 resolve or no connection could be made, and no byte of the request was sent.
 Every other failure (a timeout, a dropped connection, a certificate or TLS

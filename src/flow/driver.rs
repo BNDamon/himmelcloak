@@ -25,6 +25,7 @@
 //! Theme-independent, classification keys off core field names (see `classify`), never text.
 use core::fmt;
 use std::collections::VecDeque;
+use std::time::Instant;
 
 use url::Url;
 use zeroize::{Zeroize, Zeroizing};
@@ -127,16 +128,19 @@ async fn answer_page(
         flow.pending = Some(pending);
         return Ok(AuthStep::Challenge(next));
     }
-    let fetched = post(app, factors, &mut flow.jar, pending).await?;
+    let deadline = flow.deadline();
+    let fetched = post(app, factors, &mut flow.jar, deadline, pending).await?;
     resolve(app, factors, flow, fetched, true).await
 }
 
 /// Post the page's form. Taking the page by value wipes its answers once the form is sent,
-/// before any redirect is followed or the code is redeemed.
+/// before any redirect is followed or the code is redeemed. A retry is never sent after the
+/// login's `deadline`.
 async fn post(
     app: &PublicClientApplication,
     factors: &dyn Factors,
     jar: &mut CookieJar,
+    deadline: Instant,
     pending: Pending,
 ) -> Result<Fetched> {
     let factor = factors
@@ -147,7 +151,10 @@ async fn post(
         .iter()
         .map(|(name, value)| (name.as_str(), value.as_str()))
         .collect();
-    pending.form.submit(app.transport(), jar, &fields).await
+    pending
+        .form
+        .submit(app.transport(), jar, &fields, deadline)
+        .await
 }
 
 /// Turn Keycloak's response into the next step: a page's first challenge, or completion at the

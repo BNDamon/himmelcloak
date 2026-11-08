@@ -103,11 +103,13 @@ async fn live_password_form_reaches_the_callback_and_a_wrong_password_is_rejecte
     trace("submit alice's login form with the correct password");
     let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
     let form = login_form(&app, &transport, &mut flow).await;
+    let deadline = flow.deadline();
     let fetched = form
         .submit(
             &transport,
             &mut flow.jar,
             &[("username", "alice"), ("password", PASSWORD)],
+            deadline,
         )
         .await
         .unwrap();
@@ -123,11 +125,13 @@ async fn live_password_form_reaches_the_callback_and_a_wrong_password_is_rejecte
     trace("submit alice's login form with a wrong password");
     let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
     let form = login_form(&app, &transport, &mut flow).await;
+    let deadline = flow.deadline();
     let fetched = form
         .submit(
             &transport,
             &mut flow.jar,
             &[("username", "alice"), ("password", "wrong-password")],
+            deadline,
         )
         .await
         .unwrap();
@@ -151,11 +155,13 @@ async fn live_code_exchange_returns_verified_tokens_and_a_wrong_code_is_rejected
     trace("log alice in and exchange the callback's code");
     let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
     let form = login_form(&app, &transport, &mut flow).await;
+    let deadline = flow.deadline();
     let fetched = form
         .submit(
             &transport,
             &mut flow.jar,
             &[("username", "alice"), ("password", PASSWORD)],
+            deadline,
         )
         .await
         .unwrap();
@@ -197,11 +203,13 @@ async fn log_in(
     flow: &mut AuthFlow,
 ) -> Redirect {
     let form = login_form(app, transport, flow).await;
+    let deadline = flow.deadline();
     let fetched = form
         .submit(
             transport,
             &mut flow.jar,
             &[("username", "alice"), ("password", PASSWORD)],
+            deadline,
         )
         .await
         .unwrap();
