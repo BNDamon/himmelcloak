@@ -161,26 +161,30 @@ fn read_input(prompt: &str, hidden: bool) -> LoginResult<Zeroizing<String>> {
 
     Ok(value)
 }
+/// The fixed message for a login that could not start. It never includes server details.
+fn start_error(error: &himmelcloak::Error) -> &'static str {
+    match error {
+        himmelcloak::Error::HttpStatus(_) => "cannot start login: unexpected HTTP status",
+        himmelcloak::Error::Transport(_) | himmelcloak::Error::Unreachable(_) => {
+            "cannot start login: transport failure"
+        }
+        himmelcloak::Error::Protocol(_) => "cannot start login: protocol failure",
+        himmelcloak::Error::UnsupportedFactor => "cannot start login: unsupported factor",
+        himmelcloak::Error::Crypto => "cannot start login: cryptographic failure",
+        himmelcloak::Error::InvalidConfiguration(_) => "cannot start login: invalid configuration",
+        _ => "cannot start login: engine failure",
+    }
+}
+
 async fn login(config: Config) -> LoginResult<()> {
     let client = PublicClientApplication::with_config(config)
         .await
         .map_err(|_| "cannot connect to Keycloak")?;
 
-    let (mut flow, mut step) =
-        client
-            .initiate_auth_flow(Start::default())
-            .await
-            .map_err(|error| match error {
-                himmelcloak::Error::HttpStatus(_) => "cannot start login: unexpected HTTP status",
-                himmelcloak::Error::Transport(_) => "cannot start login: transport failure",
-                himmelcloak::Error::Protocol(_) => "cannot start login: protocol failure",
-                himmelcloak::Error::UnsupportedFactor => "cannot start login: unsupported factor",
-                himmelcloak::Error::Crypto => "cannot start login: cryptographic failure",
-                himmelcloak::Error::InvalidConfiguration(_) => {
-                    "cannot start login: invalid configuration"
-                }
-                _ => "cannot start login: engine failure",
-            })?;
+    let (mut flow, mut step) = client
+        .initiate_auth_flow(Start::default())
+        .await
+        .map_err(|error| start_error(&error))?;
     let mut password_submitted = false;
 
     loop {
@@ -227,8 +231,44 @@ pub fn run(path: &Path) -> LoginResult<()> {
 }
 #[cfg(test)]
 mod tests {
-    use super::parse_login_config;
+    use super::{parse_login_config, start_error};
     use std::path::PathBuf;
+
+    #[test]
+    fn start_errors_have_fixed_messages() {
+        use himmelcloak::Error;
+        for (error, message) in [
+            (
+                Error::HttpStatus(503),
+                "cannot start login: unexpected HTTP status",
+            ),
+            (
+                Error::Transport("reset".into()),
+                "cannot start login: transport failure",
+            ),
+            // Keycloak never reached is a network problem, not an engine fault.
+            (
+                Error::Unreachable("refused".into()),
+                "cannot start login: transport failure",
+            ),
+            (
+                Error::Protocol("page"),
+                "cannot start login: protocol failure",
+            ),
+            (
+                Error::UnsupportedFactor,
+                "cannot start login: unsupported factor",
+            ),
+            (Error::Crypto, "cannot start login: cryptographic failure"),
+            (
+                Error::InvalidConfiguration("realm"),
+                "cannot start login: invalid configuration",
+            ),
+            (Error::Expired, "cannot start login: engine failure"),
+        ] {
+            assert_eq!(start_error(&error), message);
+        }
+    }
 
     const VALID: &str = r#"
 [login]
