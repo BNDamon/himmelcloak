@@ -101,7 +101,10 @@ device the page did not offer is refused before anything is sent.
 
 A form post that never reached Keycloak is sent once more after 250 ms, unless
 the login's time limit has passed by then: answers are never sent after the
-login expires, and the step ends with `Expired`. The
+login expires, and the step ends with `Expired`. Both posts also carry that
+time limit to the transport, which stops waiting for a free connection slot,
+connecting, or sending once it passes, so a retry held up there is not sent
+late either. The
 transport reports that case as `Error::Unreachable`: the host name did not
 resolve or no connection could be made, and no byte of the request was sent.
 Every other failure (a timeout, a dropped connection, a certificate or TLS

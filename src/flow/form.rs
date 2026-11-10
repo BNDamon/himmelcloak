@@ -195,7 +195,8 @@ impl Form {
                 (name.as_str(), answer.unwrap_or(value.as_str()))
             })
             .collect();
-        match fetch::post_form(transport, jar, self.action.clone(), &values).await {
+        match fetch::post_form_before(transport, jar, self.action.clone(), &values, deadline).await
+        {
             // The form never reached Keycloak, so sending it once more cannot count a second
             // attempt or replay the session code. Any other failure may have reached it.
             Err(Error::Unreachable(_)) => {
@@ -204,7 +205,10 @@ impl Form {
                 if Instant::now() >= deadline {
                     return Err(Error::Expired);
                 }
-                fetch::post_form(transport, jar, self.action.clone(), &values).await
+                // The transport also stops at the deadline, so a retry delayed by waiting for a
+                // free slot or by connecting is never sent late either.
+                fetch::post_form_before(transport, jar, self.action.clone(), &values, deadline)
+                    .await
             }
             sent => sent,
         }
@@ -278,6 +282,7 @@ mod tests {
     struct Recorder {
         sent: Mutex<Sent>,
         failures: Mutex<VecDeque<Error>>,
+        send_by: Mutex<Vec<Option<Instant>>>,
     }
 
     impl HttpTransport for Recorder {
@@ -289,6 +294,7 @@ mod tests {
                 .into_owned()
                 .collect();
             self.sent.lock().unwrap().push((request.url.clone(), body));
+            self.send_by.lock().unwrap().push(request.send_by);
             let failure = self.failures.lock().unwrap().pop_front();
             Box::pin(async move {
                 match failure {
@@ -365,6 +371,25 @@ mod tests {
         let (result, sent) = submit_through(vec![unreachable], deadline).await;
         assert_eq!(result.err(), Some(Error::Expired));
         assert_eq!(sent.len(), 1, "only the first post may be sent");
+    }
+
+    #[tokio::test]
+    async fn both_posts_tell_the_transport_the_login_deadline() {
+        // The transport enforces it while waiting for a slot, connecting, and sending.
+        let recorder = Recorder {
+            failures: Mutex::new(vec![Error::Unreachable("connection refused".to_owned())].into()),
+            ..Recorder::default()
+        };
+        let deadline = later();
+        let answers = [("username", "alice"), ("password", "synthetic-password")];
+        let result = form(BASE_LOGIN)
+            .submit(&recorder, &mut CookieJar::default(), &answers, deadline)
+            .await;
+        assert!(result.is_ok());
+        assert_eq!(
+            recorder.send_by.into_inner().unwrap(),
+            vec![Some(deadline), Some(deadline)]
+        );
     }
 
     #[tokio::test]

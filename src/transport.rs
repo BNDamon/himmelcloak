@@ -50,6 +50,8 @@ pub(crate) struct Request {
     pub headers: Vec<String>,
     pub body: Vec<u8>,
     pub cookies: Vec<String>,
+    /// The latest moment any of this request may be sent, on top of the transport's own timeout.
+    pub send_by: Option<Instant>,
 }
 
 impl Request {
@@ -60,7 +62,14 @@ impl Request {
             headers: Vec::new(),
             body: Vec::new(),
             cookies: Vec::new(),
+            send_by: None,
         }
+    }
+
+    /// Never send this request, nor wait for a free transport slot, after `deadline`.
+    pub fn before(mut self, deadline: Instant) -> Self {
+        self.send_by = Some(deadline);
+        self
     }
 
     pub fn form(url: Url, fields: &[(&str, &str)]) -> Result<Self> {
@@ -87,6 +96,7 @@ impl Request {
             headers: vec!["Content-Type: application/x-www-form-urlencoded".to_owned()],
             body,
             cookies: Vec::new(),
+            send_by: None,
         })
     }
 }
@@ -304,9 +314,13 @@ impl HttpTransport for CurlTransport {
             if std::panic::catch_unwind(|| tokio::time::sleep(Duration::ZERO)).is_err() {
                 return Err(Error::Transport("Tokio time driver required".to_owned()));
             }
-            let deadline = Instant::now()
+            let timeout_deadline = Instant::now()
                 .checked_add(timeout)
                 .ok_or(Error::InvalidConfiguration("timeout too large"))?;
+            // The caller's deadline bounds waiting for a slot, connecting, and the transfer.
+            let deadline = request
+                .send_by
+                .map_or(timeout_deadline, |send_by| send_by.min(timeout_deadline));
             let deadline_async = tokio::time::Instant::from_std(deadline);
             let permit = tokio::time::timeout_at(deadline_async, slots.acquire_owned())
                 .await
@@ -685,6 +699,45 @@ mod tests {
         );
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
         drop(occupied);
+    }
+
+    #[tokio::test]
+    async fn a_request_is_never_dispatched_after_its_send_by_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let form = || Request::form(url.clone(), &[("password", "synthetic")]).unwrap();
+        let slots = Arc::new(Semaphore::new(1));
+        // The transport's own timeout is long; only the request's deadline can stop it.
+        let transport = CurlTransport {
+            ca_bundle: None,
+            timeout: std::time::Duration::from_secs(30),
+            slots: slots.clone(),
+        };
+        let timed_out = Some(Error::Transport("HTTP request timed out".to_owned()));
+
+        // Every slot stays busy until after the deadline.
+        let occupied = slots.clone().acquire_owned().await.unwrap();
+        let started = std::time::Instant::now();
+        let deadline = started + std::time::Duration::from_millis(100);
+        assert_eq!(
+            transport.send(form().before(deadline)).await.err(),
+            timed_out
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        drop(occupied);
+
+        // A slot is free, but the deadline has already passed.
+        let passed = std::time::Instant::now();
+        assert_eq!(transport.send(form().before(passed)).await.err(), timed_out);
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(
+            listener.accept().err().map(|error| error.kind()),
+            Some(std::io::ErrorKind::WouldBlock),
+            "nothing may connect after the deadline"
+        );
+        assert_eq!(slots.available_permits(), 1);
     }
 
     #[test]

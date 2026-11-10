@@ -25,7 +25,7 @@
 //! replaces that origin's lines with libcurl's cookie list from the response. Redirects are never
 //! followed; they are returned so the flow driver decides every hop.
 use core::fmt;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use url::{Host, Origin, Url};
 use zeroize::Zeroize;
@@ -314,6 +314,17 @@ pub(crate) async fn post_form(
     fields: &[(&str, &str)],
 ) -> Result<Fetched> {
     send(transport, jar, Request::form(url, fields)?).await
+}
+
+/// Post a form that must not be sent, or wait for transport capacity, after `deadline`.
+pub(crate) async fn post_form_before(
+    transport: &dyn HttpTransport,
+    jar: &mut CookieJar,
+    url: Url,
+    fields: &[(&str, &str)],
+    deadline: Instant,
+) -> Result<Fetched> {
+    send(transport, jar, Request::form(url, fields)?.before(deadline)).await
 }
 
 /// HTTPS only, even on loopback (charter §2.6.8). Test builds also accept loopback HTTP so the
