@@ -36,13 +36,13 @@ jobs:
         features: [default, none, password, gov, passwordless, webauthn-virtual]
         # Pinned to the digests publish-ci-image.yml lists in its run summary; bump them together.
         include:
-          - { distro: debian-12, digest: "sha256:a4b388862188a79ffe924cd10dcde593fc2b7d8395292e8bf226b655f5f7dcae" }
-          - { distro: ubuntu-24.04, digest: "sha256:71418ed6b412e1c8ed45af1c6c48cb7494722fa8e2bec995e4e5b84785f33276" }
-          - { distro: opensuse-leap-16.0, digest: "sha256:922e2b1d0c90aae68986f600518ec36edc6be5a52176f6a439ebb72742841d44" }
-          - { distro: opensuse-tumbleweed, digest: "sha256:048b0a531810b6dc19654becf87211645bd69bd99c74c32a7bde67b815f62411" }
-          - { distro: sle-bci-16.0, digest: "sha256:c227ec6a80a91f72156d2ab5608c9ad1b4766861c6ce67b5cd5ecf7b4a392907" }
-          - { distro: rockylinux-9, digest: "sha256:3c44cfdf5d1e3039a0c96bc088466c415ab355fec25aaf905a4b822119e4b80c" }
-          - { distro: fedora, digest: "sha256:053f3f4aa920659681ecb11debf01e20bc897a1f7bc4de8ebba3d8fcd0ad0130" }
+          - { distro: debian-12, digest: "sha256:77fae38660bd0f383fdc1c2a2860669796d85dfb10f826e195234dde6ead1e8b" }
+          - { distro: ubuntu-24.04, digest: "sha256:23e1c3e3d67e86d414f4d5469498fb02660c2cbaf8ba07bb0430ad747b859916" }
+          - { distro: opensuse-leap-16.0, digest: "sha256:27882bc953b3a9e10490422b937c3761ba86c16752ba9a9cb03b6223b5459319" }
+          - { distro: opensuse-tumbleweed, digest: "sha256:501b7708d3801b8a30b1b699d1b09f7acde73efae21fd48b9cb7a063a465a7c1" }
+          - { distro: sle-bci-16.0, digest: "sha256:64b315c7d893ff3201cb728804c69d1eb6f71a30b6467ae0ec7f5cb129a30231" }
+          - { distro: rockylinux-9, digest: "sha256:8898895f05db551f5447db327b48a00ae0ea353001fa69f1fc0f58a3b41e739f" }
+          - { distro: fedora, digest: "sha256:9ee62ec3d97d0c42171de6b540c52a14a71e9414e2c08dfe74946b00f6a5d249" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
