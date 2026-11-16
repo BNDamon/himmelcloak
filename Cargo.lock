@@ -827,9 +827,9 @@ checksum = "8c3b93199df0ab874cdf0c6a94f0a0dc3423fe41f1cafb62b8bd7b1deb277aef"
 
 [[package]]
 name = "wolfssl-wolfcrypt"
-version = "2.2.0"
+version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7569a7fc33cbda75f21c49feeca88fa72c0440e49191ad2df07fe05737674ef"
+checksum = "3c156ee519ecb8ed7ee606e60dc81364a24105d14f0054abacee90e27ef31d83"
 dependencies = [
  "bindgen",
  "num-traits",

@@ -40,7 +40,7 @@ workspace features with the committed lockfile and includes dev-dependencies.
 Vulnerability advisories are errors by cargo-deny default; yanked crates are
 explicitly denied. No advisory exceptions are configured.
 
-The license exception for `wolfssl-wolfcrypt =2.2.0` is deliberately exact. Its
+The license exception for `wolfssl-wolfcrypt =3.0.0` is deliberately exact. Its
 published manifest uses deprecated `GPL-3.0`; the source header grants version 3
 or later. A dependency bump using that identifier is expected to fail until the
 new published metadata and source headers are reviewed. Update the exception

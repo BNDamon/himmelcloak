@@ -91,7 +91,7 @@ serde_json = "1"
 signature = "2.2"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 url = "2"
-wolfssl-wolfcrypt = { version = "=2.2.0", features = ["signature"] }
+wolfssl-wolfcrypt = { version = "=3.0.0", features = ["signature"] }
 zeroize = { version = "1", features = ["zeroize_derive", "serde"] }
 
 [dev-dependencies]
