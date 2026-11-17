@@ -29,7 +29,8 @@
 //! - Each entry is AES-256-GCM encrypted under a fresh random nonce. The format version, the
 //!   expiry time, and the hash of the user's name are authenticated with it, so an entry cannot
 //!   be edited, given a later expiry, or moved to another user's name.
-//! - An expired entry is refused and deleted.
+//! - An expired entry is refused. It is left in place for the next `store` to replace, so a
+//!   load never deletes a session another process has just saved.
 //! - The key, the encoded tokens, and the decrypted entry live in buffers wiped when dropped.
 //!
 //! The key file is on the same machine, so this protects copies of the cache (a backup, a copied
@@ -54,6 +55,9 @@ const TAG_LEN: usize = 16;
 const EXPIRY_LEN: usize = 8;
 const HEADER_LEN: usize = MAGIC.len() + EXPIRY_LEN + NONCE_LEN + TAG_LEN;
 const MAX_ENTRY: u64 = 256 * 1024;
+/// The largest encoded tokens that still fit in an entry `load` accepts. AES-GCM ciphertext is
+/// the same length as its plaintext.
+const MAX_PLAINTEXT: usize = MAX_ENTRY as usize - HEADER_LEN;
 const ROOT: u32 = 0;
 /// Group and other permission bits; none may be set.
 const SHARED_BITS: u32 = 0o077;
@@ -107,7 +111,8 @@ impl TokenCache {
     }
 
     /// Save `user`'s tokens, replacing any earlier entry. The entry is refused after
-    /// `expires_at`, which must be in the future.
+    /// `expires_at`, which must be in the future. Tokens too large for `load` to accept are
+    /// refused with `InvalidConfiguration`, and the earlier entry is kept.
     pub fn store(&self, user: &str, tokens: &Tokens, expires_at: SystemTime) -> Result<()> {
         let expires = unix_seconds(expires_at)?;
         if expires <= unix_seconds(SystemTime::now())? {
@@ -115,6 +120,9 @@ impl TokenCache {
         }
         let name = crypto::sha256(user.as_bytes())?;
         let plaintext = encode(tokens)?;
+        if plaintext.len() > MAX_PLAINTEXT {
+            return Err(TOO_LARGE);
+        }
         let nonce = crypto::random_bytes::<NONCE_LEN>()?;
         let (ciphertext, tag) =
             crypto::aes_gcm_seal(&*self.key, &*nonce, &aad(expires, &name), &plaintext)?;
@@ -127,8 +135,11 @@ impl TokenCache {
         self.write(&name, &entry)
     }
 
-    /// `user`'s saved tokens, or `None` when nothing is saved. An expired entry is deleted and
-    /// refused with `Expired`; an altered one is refused with `Crypto`.
+    /// `user`'s saved tokens, or `None` when nothing is saved. An expired entry is refused with
+    /// `Expired` and left for the next `store` to replace. An entry that fails AES-GCM
+    /// verification (altered, saved under another user's name, or sealed with another key) is
+    /// refused with `Crypto`; a malformed or unsupported one (wrong version, truncated, or too
+    /// large) with `Protocol`.
     pub fn load(&self, user: &str) -> Result<Option<Tokens>> {
         self.load_at(user, SystemTime::now())
     }
@@ -161,8 +172,9 @@ impl TokenCache {
         // Decrypting first proves the expiry time was not edited.
         let plaintext =
             crypto::aes_gcm_open(&*self.key, nonce, &aad(expires, &name), ciphertext, tag)?;
+        // Not deleted here: another process may have replaced this file since it was opened,
+        // and deleting by name would remove that newer session.
         if unix_seconds(now)? >= expires {
-            let _ = fs::remove_file(&path);
             return Err(Error::Expired);
         }
         decode(&plaintext).map(Some)
@@ -204,31 +216,49 @@ impl TokenCache {
 
 /// Read the key, or create a new random one when `path` does not exist.
 fn load_key(path: &Path, owner: u32) -> Result<Zeroizing<[u8; KEY_LEN]>> {
-    match OpenOptions::new()
+    let file = match File::open(path) {
+        Err(error) if error.kind() == ErrorKind::NotFound => return create_key(path, owner),
+        opened => opened.map_err(|_| PRIVATE_KEY)?,
+    };
+    read_key(file, owner)
+}
+
+/// Write a new random key to a private temporary file, then publish it at `path` only once it
+/// is complete and on disk, so a failure never leaves a partial key behind. A hard link refuses
+/// to replace an existing file: when another process created the key first, its key is used.
+fn create_key(path: &Path, owner: u32) -> Result<Zeroizing<[u8; KEY_LEN]>> {
+    let key = crypto::random_bytes::<KEY_LEN>()?;
+    let suffix = crypto::random_bytes::<8>()?;
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(format!(".{}.tmp", hex(&*suffix)));
+    let temporary = PathBuf::from(temporary);
+    let published = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(path)
-    {
-        Ok(mut file) => {
-            let key = crypto::random_bytes::<KEY_LEN>()?;
-            let written = file.write_all(&*key).and_then(|()| file.sync_all());
-            written.map_err(|_| PRIVATE_KEY)?;
-            Ok(key)
-        }
+        .open(&temporary)
+        .and_then(|mut file| file.write_all(&*key).and_then(|()| file.sync_all()))
+        .and_then(|()| fs::hard_link(&temporary, path));
+    let _ = fs::remove_file(&temporary);
+    match published {
+        Ok(()) => Ok(key),
         Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-            let mut file = File::open(path).map_err(|_| PRIVATE_KEY)?;
-            let metadata = file.metadata().map_err(|_| PRIVATE_KEY)?;
-            if !metadata.is_file() || !private(&metadata, owner) || metadata.len() != KEY_LEN as u64
-            {
-                return Err(PRIVATE_KEY);
-            }
-            let mut key = Zeroizing::new([0u8; KEY_LEN]);
-            file.read_exact(&mut *key).map_err(|_| PRIVATE_KEY)?;
-            Ok(key)
+            let file = File::open(path).map_err(|_| PRIVATE_KEY)?;
+            read_key(file, owner)
         }
         Err(_) => Err(PRIVATE_KEY),
     }
+}
+
+/// An existing key: a private file of exactly `KEY_LEN` bytes.
+fn read_key(mut file: File, owner: u32) -> Result<Zeroizing<[u8; KEY_LEN]>> {
+    let metadata = file.metadata().map_err(|_| PRIVATE_KEY)?;
+    if !metadata.is_file() || !private(&metadata, owner) || metadata.len() != KEY_LEN as u64 {
+        return Err(PRIVATE_KEY);
+    }
+    let mut key = Zeroizing::new([0u8; KEY_LEN]);
+    file.read_exact(&mut *key).map_err(|_| PRIVATE_KEY)?;
+    Ok(key)
 }
 
 /// Owned by `owner`, with no permission for group or others.
@@ -337,7 +367,8 @@ mod tests {
     use zeroize::Zeroizing;
 
     use super::{
-        decode, encode, hex, TokenCache, MAGIC, MALFORMED, PRIVATE_DIR, PRIVATE_ENTRY, PRIVATE_KEY,
+        create_key, decode, encode, hex, TokenCache, MAGIC, MALFORMED, PRIVATE_DIR, PRIVATE_ENTRY,
+        PRIVATE_KEY, TOO_LARGE,
     };
     use crate::crypto;
     use crate::error::Error;
@@ -542,20 +573,25 @@ mod tests {
     }
 
     #[test]
-    fn an_expired_entry_is_refused_and_deleted() {
+    fn an_expired_entry_is_refused_until_replaced() {
         let scratch = Scratch::new();
         let cache = scratch.open().unwrap();
         let expires = in_an_hour();
         cache.store("alice", &tokens(), expires).unwrap();
+        let expired = fs::read(scratch.entry()).unwrap();
 
-        // Usable until its expiry, then refused at that second and deleted.
+        // Usable until its expiry, then refused from that second on.
         let before = expires - Duration::from_secs(2);
         assert!(cache.load_at("alice", before).unwrap().is_some());
         assert_eq!(cache.load_at("alice", expires).err(), Some(Error::Expired));
-        assert!(
-            cache.load("alice").unwrap().is_none(),
-            "the expired entry is deleted"
-        );
+        // Refusing it does not delete it, so a load can never remove a session another
+        // process saved in the meantime. The next store replaces it.
+        assert_eq!(fs::read(scratch.entry()).unwrap(), expired);
+        assert_eq!(cache.load_at("alice", expires).err(), Some(Error::Expired));
+        let later = expires + Duration::from_secs(3600);
+        cache.store("alice", &tokens(), later).unwrap();
+        assert!(cache.load_at("alice", expires).unwrap().is_some());
+        cache.remove("alice").unwrap();
 
         // An entry that would already be expired is never written.
         let past = SystemTime::now() - Duration::from_secs(1);
@@ -628,6 +664,69 @@ mod tests {
         assert_eq!(cache.remove("alice").err(), Some(PRIVATE_ENTRY));
         let leftovers = fs::read_dir(scratch.dir()).unwrap().count();
         assert_eq!(leftovers, 1, "a failed write leaves no temporary file");
+    }
+
+    #[test]
+    fn tokens_too_large_to_load_are_refused_and_the_old_entry_kept() {
+        let scratch = Scratch::new();
+        let cache = scratch.open().unwrap();
+        cache.store("alice", &tokens(), in_an_hour()).unwrap();
+        let saved = fs::read(scratch.entry()).unwrap();
+
+        // Encoded, these tokens are exactly as large as an entry `load` accepts.
+        let encoded_without_access = encode(&tokens()).unwrap().len() - ACCESS.len();
+        let mut largest = tokens();
+        largest.access_token = "a".repeat(super::MAX_PLAINTEXT - encoded_without_access);
+        let mut oversized = tokens();
+        oversized.access_token = format!("{}a", largest.access_token);
+
+        assert_eq!(
+            cache.store("alice", &oversized, in_an_hour()).err(),
+            Some(TOO_LARGE)
+        );
+        assert_eq!(
+            fs::read(scratch.entry()).unwrap(),
+            saved,
+            "the earlier entry is untouched"
+        );
+        cache.store("alice", &largest, in_an_hour()).unwrap();
+        assert_eq!(
+            fs::metadata(scratch.entry()).unwrap().len(),
+            super::MAX_ENTRY
+        );
+        assert_eq!(
+            cache.load("alice").unwrap().unwrap().access_token,
+            largest.access_token
+        );
+    }
+
+    #[test]
+    fn a_key_is_published_whole_and_a_second_creator_uses_the_first_key() {
+        let scratch = Scratch::new();
+        let cache = scratch.open().unwrap();
+        cache.store("alice", &tokens(), in_an_hour()).unwrap();
+        let key = fs::read(scratch.key()).unwrap();
+
+        // A process that lost the race to create the key reads the winner's key instead of
+        // replacing it, so entries already sealed under it still open.
+        let second = create_key(&scratch.key(), scratch.me).unwrap();
+        assert_eq!(&second[..], &key[..]);
+        assert_eq!(fs::read(scratch.key()).unwrap(), key);
+        assert!(scratch.open().unwrap().load("alice").unwrap().is_some());
+
+        // Only the key and the cache directory remain: no temporary key file is left behind.
+        let mut names: Vec<_> = fs::read_dir(&scratch.base)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["cache", "key"]);
+
+        // A temporary file left by a crashed creator does not block a later one.
+        fs::remove_file(scratch.key()).unwrap();
+        fs::write(scratch.base.join("key.0000000000000000.tmp"), b"partial").unwrap();
+        assert!(scratch.open().is_ok());
+        assert_eq!(fs::metadata(scratch.key()).unwrap().len(), 32);
     }
 
     #[test]

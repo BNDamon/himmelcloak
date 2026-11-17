@@ -495,13 +495,21 @@ async fn live_cached_session_survives_a_restart_and_a_revoked_one_is_rejected() 
     assert_eq!(refreshed.verified_subject, cached.verified_subject);
     trace("Keycloak accepted the session loaded from the cache");
 
-    trace("revoke the session, then try the cached copy again");
-    let refresh_token = cached.refresh_token.clone().unwrap();
-    app.revoke_token(&refresh_token).await.unwrap();
+    trace("save the refreshed session, then revoke its current refresh token");
+    // Keycloak may replace the refresh token on refresh, so revoke the current one: revoking
+    // the old one would prove nothing.
+    cache.store("alice", &refreshed, expires).unwrap();
+    let current = cache.load("alice").unwrap().expect("the refreshed session");
+    assert_eq!(current.refresh_token, refreshed.refresh_token);
+    drop(refreshed);
+    app.revoke_token(current.refresh_token.as_deref().unwrap())
+        .await
+        .unwrap();
     let stale = cache
         .load("alice")
         .unwrap()
         .expect("the entry is still cached");
+    assert_eq!(stale.refresh_token, current.refresh_token);
     assert_eq!(
         app.refresh_tokens(&stale).await.err(),
         Some(Error::AuthenticationRejected)

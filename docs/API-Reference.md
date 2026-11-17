@@ -78,10 +78,14 @@ Priority 2 factors are built, and `AuthFlow::default()` is gone because only
 key (mode 0600) when they are missing; the key file's parent directory must exist. Both, and
 every entry, must belong to root with no access for group or others, or the call fails with
 `InvalidConfiguration`. `store(user, &tokens, expires_at)` encrypts the tokens with AES-256-GCM
-and replaces that user's entry; an expiry that has already passed returns `Expired` and writes
-nothing. `load(user)` returns `Ok(None)` when nothing is saved, `Expired` (and deletes the entry)
-after its expiry, and `Crypto` for an entry that was altered, written under another user's name,
-or sealed with a different key. `remove(user)` deletes the entry if there is one.
+and replaces that user's entry; an expiry that has already passed returns `Expired`, and tokens
+too large for `load` to accept return `InvalidConfiguration`, and both leave any earlier entry
+unchanged. `load(user)` returns `Ok(None)` when nothing is saved and `Expired` after the entry's
+expiry; the expired entry stays until the next `store` replaces it or `remove` deletes it. It
+returns `Crypto` when an entry fails AES-GCM verification (it was altered, written under another
+user's name, or sealed with a different key) and `Protocol` for a malformed or unsupported entry
+(wrong format version, truncated, or too large). `remove(user)` deletes the entry if there is
+one.
 
 A cached session never grants access by itself: callers still refresh or check it with Keycloak,
 and offline login stays outside scope. See [Token cache](Architecture.md#token-cache) for the

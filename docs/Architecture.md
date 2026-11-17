@@ -259,9 +259,14 @@ AES-GCM tag, and the AES-256-GCM ciphertext of the tokens and their verified
 subject, issuer, client, and refresh-token bindings. The version, expiry, and
 user-name hash are authenticated with the ciphertext, so an edited byte, a
 later expiry, or a file copied under another user's name fails to decrypt.
-Expiry is checked after decryption; an expired entry is deleted. Entries are
-written to a new private file and renamed into place, so a crash never leaves
-a partial entry.
+Expiry is checked after decryption. An expired entry is refused but not
+deleted, because another process may have replaced the file since it was
+opened; the next store replaces it. Entries are written to a new private file
+and renamed into place, so a crash never leaves a partial entry, and a store
+refuses tokens too large for a load to accept. The key is likewise written to
+a temporary file and hard-linked into place only once complete, so a failed
+first start never leaves a partial key, and a second process creating the key
+at the same time uses the first one's key.
 
 The cache directory, the key file, and every entry must belong to root with no
 group or other access. The key, the encoded tokens, and the decrypted entry are
