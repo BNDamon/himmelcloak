@@ -250,6 +250,27 @@ running.
 The source is licensed under GPL-3.0-or-later because it links GPL wolfSSL
 components. See [Licensing](Licensing.md) for details.
 
+## Token cache
+
+`src/cache.rs` stores one file per user, named by the SHA-256 hash of the user
+name so no name can reach outside the cache directory. A file holds the format
+version `HCC1`, the expiry in seconds since 1970, a random 96-bit nonce, the
+AES-GCM tag, and the AES-256-GCM ciphertext of the tokens and their verified
+subject, issuer, client, and refresh-token bindings. The version, expiry, and
+user-name hash are authenticated with the ciphertext, so an edited byte, a
+later expiry, or a file copied under another user's name fails to decrypt.
+Expiry is checked after decryption; an expired entry is deleted. Entries are
+written to a new private file and renamed into place, so a crash never leaves
+a partial entry.
+
+The cache directory, the key file, and every entry must belong to root with no
+group or other access. The key, the encoded tokens, and the decrypted entry are
+held in zeroizing buffers. The key lives on the same machine, so encryption
+protects copies of the cache, such as a backup or a copied directory, but not
+a reader who is already root. Keeping the key in a TPM or HSM is the separate
+`hsm-seal` package. A cached session is never a login: offline and
+cached-credential login stay outside scope.
+
 ## Test contract
 
 Every completed method needs a live test against an unmodified Keycloak

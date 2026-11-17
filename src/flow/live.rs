@@ -448,3 +448,64 @@ async fn live_direct_grant_hotp_accepts_and_rejects_fixture_user() {
     assert_eq!(user["preferred_username"], "dave");
     trace("Keycloak accepted dave's HOTP code");
 }
+
+#[tokio::test]
+#[ignore = "requires a live Keycloak server and test CA"]
+async fn live_cached_session_survives_a_restart_and_a_revoked_one_is_rejected() {
+    use std::os::unix::fs::DirBuilderExt;
+
+    use crate::cache::TokenCache;
+
+    let config = config();
+    let app = PublicClientApplication::with_config(config.clone())
+        .await
+        .unwrap();
+    let transport = CurlTransport::new(config.ca_bundle.clone(), config.timeout).unwrap();
+    // A private scratch directory with an unpredictable name; the live suite runs as root.
+    let suffix = crate::crypto::random_bytes::<16>().unwrap();
+    let name: String = suffix.iter().map(|byte| format!("{byte:02x}")).collect();
+    let base = std::env::temp_dir().join(format!("himmelcloak-live-cache-{name}"));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&base)
+        .unwrap();
+    let (dir, key) = (base.join("cache"), base.join("key"));
+
+    trace("log alice in and save her verified session in the token cache");
+    let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+    let redirect = log_in(&app, &transport, &mut flow).await;
+    let Some(AuthStep::Complete(tokens)) = app
+        .complete_at_callback(&redirect, &mut flow)
+        .await
+        .unwrap()
+    else {
+        panic!("the callback must complete the login");
+    };
+    let expires = std::time::SystemTime::now() + Duration::from_secs(300);
+    TokenCache::open(&dir, &key)
+        .unwrap()
+        .store("alice", &tokens, expires)
+        .unwrap();
+    drop(tokens);
+
+    trace("reopen the cache as a restarted process and refresh the saved session");
+    let cache = TokenCache::open(&dir, &key).unwrap();
+    let cached = cache.load("alice").unwrap().expect("alice's saved session");
+    let refreshed = app.refresh_tokens(&cached).await.unwrap();
+    assert_eq!(refreshed.verified_subject, cached.verified_subject);
+    trace("Keycloak accepted the session loaded from the cache");
+
+    trace("revoke the session, then try the cached copy again");
+    let refresh_token = cached.refresh_token.clone().unwrap();
+    app.revoke_token(&refresh_token).await.unwrap();
+    let stale = cache
+        .load("alice")
+        .unwrap()
+        .expect("the entry is still cached");
+    assert_eq!(
+        app.refresh_tokens(&stale).await.err(),
+        Some(Error::AuthenticationRejected)
+    );
+    trace("Keycloak refused the revoked session even though it was still cached");
+    std::fs::remove_dir_all(&base).unwrap();
+}

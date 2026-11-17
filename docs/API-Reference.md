@@ -71,6 +71,22 @@ These types replace the earlier placeholders, which had no callers: `Challenge::
 Priority 2 factors are built, and `AuthFlow::default()` is gone because only
 `initiate_auth_flow` creates a flow.
 
+## Token cache
+
+`himmelcloak::cache::TokenCache` keeps a verified session's `Tokens` across a process restart.
+`TokenCache::open(dir, key_file)` creates the cache directory (mode 0700) and a random 256-bit
+key (mode 0600) when they are missing; the key file's parent directory must exist. Both, and
+every entry, must belong to root with no access for group or others, or the call fails with
+`InvalidConfiguration`. `store(user, &tokens, expires_at)` encrypts the tokens with AES-256-GCM
+and replaces that user's entry; an expiry that has already passed returns `Expired` and writes
+nothing. `load(user)` returns `Ok(None)` when nothing is saved, `Expired` (and deletes the entry)
+after its expiry, and `Crypto` for an entry that was altered, written under another user's name,
+or sealed with a different key. `remove(user)` deletes the entry if there is one.
+
+A cached session never grants access by itself: callers still refresh or check it with Keycloak,
+and offline login stays outside scope. See [Token cache](Architecture.md#token-cache) for the
+format and what it protects against.
+
 ## Read-only group sync
 
 `himmelcloak::admin::read_allowed_group(&Config, group_id, client_secret)` uses

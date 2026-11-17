@@ -35,6 +35,7 @@ compile_error!("himmelcloak requires panic=unwind for Tokio time-driver detectio
 pub mod admin;
 pub mod authenticator;
 pub mod authn;
+pub mod cache;
 pub mod client;
 pub mod config;
 pub mod error;
