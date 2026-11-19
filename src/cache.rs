@@ -61,6 +61,8 @@ const MAX_PLAINTEXT: usize = MAX_ENTRY as usize - HEADER_LEN;
 const ROOT: u32 = 0;
 /// Group and other permission bits; none may be set.
 const SHARED_BITS: u32 = 0o077;
+/// Group and other write bits; none may be set on the key's directory.
+const WRITE_BITS: u32 = 0o022;
 /// The token fields an entry holds, in order.
 const FIELDS: usize = 7;
 
@@ -68,6 +70,9 @@ const PRIVATE_DIR: Error =
     Error::InvalidConfiguration("token cache directory must belong to root and be private");
 const PRIVATE_KEY: Error = Error::InvalidConfiguration(
     "token cache key must belong to root, be private, and hold 32 bytes",
+);
+const PRIVATE_KEY_DIR: Error = Error::InvalidConfiguration(
+    "token cache key directory must belong to root and not be writable by group or others",
 );
 const PRIVATE_ENTRY: Error =
     Error::InvalidConfiguration("token cache entry must belong to root and be private");
@@ -85,7 +90,9 @@ pub struct TokenCache {
 impl TokenCache {
     /// Open the cache in `dir`, encrypting with the key in `key_file`. Creates the directory
     /// (mode 0700) and a new random key (mode 0600) when they do not exist yet. The key file's
-    /// parent directory must already exist.
+    /// parent directory must already exist, belong to root, and not be writable by group or
+    /// others: otherwise someone could delete the key, and the next open would quietly create
+    /// a new one that no saved entry opens under.
     pub fn open(dir: &Path, key_file: &Path) -> Result<Self> {
         Self::open_owned_by(dir, key_file, ROOT)
     }
@@ -113,6 +120,11 @@ impl TokenCache {
     /// Save `user`'s tokens, replacing any earlier entry. The entry is refused after
     /// `expires_at`, which must be in the future. Tokens too large for `load` to accept are
     /// refused with `InvalidConfiguration`, and the earlier entry is kept.
+    ///
+    /// `expires_at` is the caller's choice and is not tied to the tokens' own lifetimes, so an
+    /// entry can outlive the refresh token it holds. That is harmless, since Keycloak still
+    /// rejects the session when it is refreshed, but callers should not pass a later time
+    /// than the refresh token's expiry.
     pub fn store(&self, user: &str, tokens: &Tokens, expires_at: SystemTime) -> Result<()> {
         let expires = unix_seconds(expires_at)?;
         if expires <= unix_seconds(SystemTime::now())? {
@@ -147,7 +159,7 @@ impl TokenCache {
     fn load_at(&self, user: &str, now: SystemTime) -> Result<Option<Tokens>> {
         let name = crypto::sha256(user.as_bytes())?;
         let path = self.path(&name);
-        let mut file = match File::open(&path) {
+        let mut file = match open_no_follow(&path) {
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
             opened => opened.map_err(|_| PRIVATE_ENTRY)?,
         };
@@ -196,7 +208,8 @@ impl TokenCache {
     }
 
     /// Write through a new private file renamed into place, so a crash never leaves a partial
-    /// entry behind.
+    /// entry behind. The directory is synced after the rename so the new entry survives a
+    /// crash too.
     fn write(&self, name: &[u8; 32], entry: &[u8]) -> Result<()> {
         let suffix = crypto::random_bytes::<8>()?;
         let temporary = self.dir.join(format!(".{}.tmp", hex(&*suffix)));
@@ -206,7 +219,8 @@ impl TokenCache {
             .mode(0o600)
             .open(&temporary)
             .and_then(|mut file| file.write_all(entry).and_then(|()| file.sync_all()))
-            .and_then(|()| fs::rename(&temporary, self.path(name)));
+            .and_then(|()| fs::rename(&temporary, self.path(name)))
+            .and_then(|()| sync_dir(&self.dir));
         if written.is_err() {
             let _ = fs::remove_file(&temporary);
         }
@@ -214,9 +228,14 @@ impl TokenCache {
     }
 }
 
-/// Read the key, or create a new random one when `path` does not exist.
+/// Read the key, or create a new random one when `path` does not exist. The key's directory
+/// must belong to `owner` and not be writable by group or others.
 fn load_key(path: &Path, owner: u32) -> Result<Zeroizing<[u8; KEY_LEN]>> {
-    let file = match File::open(path) {
+    let parent = fs::metadata(parent(path)).map_err(|_| PRIVATE_KEY_DIR)?;
+    if !parent.is_dir() || parent.uid() != owner || parent.mode() & WRITE_BITS != 0 {
+        return Err(PRIVATE_KEY_DIR);
+    }
+    let file = match open_no_follow(path) {
         Err(error) if error.kind() == ErrorKind::NotFound => return create_key(path, owner),
         opened => opened.map_err(|_| PRIVATE_KEY)?,
     };
@@ -226,6 +245,8 @@ fn load_key(path: &Path, owner: u32) -> Result<Zeroizing<[u8; KEY_LEN]>> {
 /// Write a new random key to a private temporary file, then publish it at `path` only once it
 /// is complete and on disk, so a failure never leaves a partial key behind. A hard link refuses
 /// to replace an existing file: when another process created the key first, its key is used.
+/// The directory is synced after the link, so a crash cannot lose a key entries were sealed
+/// under.
 fn create_key(path: &Path, owner: u32) -> Result<Zeroizing<[u8; KEY_LEN]>> {
     let key = crypto::random_bytes::<KEY_LEN>()?;
     let suffix = crypto::random_bytes::<8>()?;
@@ -238,12 +259,13 @@ fn create_key(path: &Path, owner: u32) -> Result<Zeroizing<[u8; KEY_LEN]>> {
         .mode(0o600)
         .open(&temporary)
         .and_then(|mut file| file.write_all(&*key).and_then(|()| file.sync_all()))
-        .and_then(|()| fs::hard_link(&temporary, path));
+        .and_then(|()| fs::hard_link(&temporary, path))
+        .and_then(|()| sync_dir(parent(path)));
     let _ = fs::remove_file(&temporary);
     match published {
         Ok(()) => Ok(key),
         Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-            let file = File::open(path).map_err(|_| PRIVATE_KEY)?;
+            let file = open_no_follow(path).map_err(|_| PRIVATE_KEY)?;
             read_key(file, owner)
         }
         Err(_) => Err(PRIVATE_KEY),
@@ -259,6 +281,28 @@ fn read_key(mut file: File, owner: u32) -> Result<Zeroizing<[u8; KEY_LEN]>> {
     let mut key = Zeroizing::new([0u8; KEY_LEN]);
     file.read_exact(&mut *key).map_err(|_| PRIVATE_KEY)?;
     Ok(key)
+}
+
+/// Open for reading without following a symlink, so `path` itself must be the file. A FIFO or
+/// device does not block the open; the caller's `is_file` check then refuses it.
+fn open_no_follow(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+}
+
+/// The directory holding `path`; the current directory for a bare file name.
+fn parent(path: &Path) -> &Path {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    parent.unwrap_or(Path::new("."))
+}
+
+/// Make a rename or link inside `dir` durable.
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    File::open(dir)?.sync_all()
 }
 
 /// Owned by `owner`, with no permission for group or others.
@@ -368,7 +412,7 @@ mod tests {
 
     use super::{
         create_key, decode, encode, hex, TokenCache, MAGIC, MALFORMED, PRIVATE_DIR, PRIVATE_ENTRY,
-        PRIVATE_KEY, TOO_LARGE,
+        PRIVATE_KEY, PRIVATE_KEY_DIR, TOO_LARGE,
     };
     use crate::crypto;
     use crate::error::Error;
@@ -568,6 +612,69 @@ mod tests {
         let missing = scratch.base.join("missing").join("key");
         assert_eq!(
             TokenCache::open_owned_by(&scratch.dir(), &missing, scratch.me).err(),
+            Some(PRIVATE_KEY_DIR)
+        );
+        // Creating a key where none can be written fails cleanly too.
+        assert_eq!(create_key(&missing, scratch.me).err(), Some(PRIVATE_KEY));
+    }
+
+    #[test]
+    fn the_key_directory_must_not_let_others_replace_the_key() {
+        let scratch = Scratch::new();
+        let cache = scratch.open().unwrap();
+        cache.store("alice", &tokens(), in_an_hour()).unwrap();
+
+        // If group or others could write the key's directory, they could delete the key and
+        // the next open would make a new one that no saved entry opens under.
+        for mode in [0o770, 0o702] {
+            fs::set_permissions(&scratch.base, fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(scratch.open().err(), Some(PRIVATE_KEY_DIR));
+        }
+        fs::set_permissions(&scratch.base, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(scratch.open().is_ok(), "readable by others is fine");
+        fs::set_permissions(&scratch.base, fs::Permissions::from_mode(0o700)).unwrap();
+
+        // Another owner, or a key "directory" that is a file, is refused too.
+        assert_eq!(
+            super::load_key(&scratch.key(), scratch.me + 1).err(),
+            Some(PRIVATE_KEY_DIR)
+        );
+        let inside_a_file = scratch.key().join("key");
+        assert_eq!(
+            super::load_key(&inside_a_file, scratch.me).err(),
+            Some(PRIVATE_KEY_DIR)
+        );
+
+        // A bare file name is checked against the current directory.
+        assert_eq!(super::parent(Path::new("key")), Path::new("."));
+        assert_eq!(super::parent(&scratch.key()), scratch.base);
+        assert!(scratch.open().unwrap().load("alice").unwrap().is_some());
+    }
+
+    #[test]
+    fn symlinks_are_never_followed() {
+        let scratch = Scratch::new();
+        let cache = scratch.open().unwrap();
+        cache.store("alice", &tokens(), in_an_hour()).unwrap();
+        let entry = scratch.entry();
+
+        // A link in place of a valid entry, pointing at a valid copy of it, is refused.
+        let copy = scratch.base.join("copy");
+        fs::rename(&entry, &copy).unwrap();
+        std::os::unix::fs::symlink(&copy, &entry).unwrap();
+        assert_eq!(cache.load("alice").err(), Some(PRIVATE_ENTRY));
+        fs::remove_file(&entry).unwrap();
+        fs::rename(&copy, &entry).unwrap();
+        assert!(cache.load("alice").unwrap().is_some());
+
+        // So is a link in place of the key.
+        let key = scratch.base.join("real-key");
+        fs::rename(scratch.key(), &key).unwrap();
+        std::os::unix::fs::symlink(&key, scratch.key()).unwrap();
+        assert_eq!(scratch.open().err(), Some(PRIVATE_KEY));
+        // A process that loses the race to create the key does not follow one either.
+        assert_eq!(
+            create_key(&scratch.key(), scratch.me).err(),
             Some(PRIVATE_KEY)
         );
     }

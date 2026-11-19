@@ -266,7 +266,11 @@ and renamed into place, so a crash never leaves a partial entry, and a store
 refuses tokens too large for a load to accept. The key is likewise written to
 a temporary file and hard-linked into place only once complete, so a failed
 first start never leaves a partial key, and a second process creating the key
-at the same time uses the first one's key.
+at the same time uses the first one's key. The directory is synced after each
+rename and link, so a crash cannot lose a new entry or the key. Entries and the
+key are opened with `O_NOFOLLOW`, and the key's directory must belong to root
+and not be writable by group or others, so no one else can delete or swap the
+key.
 
 The cache directory, the key file, and every entry must belong to root with no
 group or other access. The key, the encoded tokens, and the decrypted entry are

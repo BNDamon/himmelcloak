@@ -469,7 +469,15 @@ async fn live_cached_session_survives_a_restart_and_a_revoked_one_is_rejected() 
         .mode(0o700)
         .create(&base)
         .unwrap();
-    let (dir, key) = (base.join("cache"), base.join("key"));
+    /// Removes the scratch directory when the test ends, including when an assert fails.
+    struct RemoveOnDrop(std::path::PathBuf);
+    impl Drop for RemoveOnDrop {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let scratch = RemoveOnDrop(base);
+    let (dir, key) = (scratch.0.join("cache"), scratch.0.join("key"));
 
     trace("log alice in and save her verified session in the token cache");
     let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
@@ -515,5 +523,4 @@ async fn live_cached_session_survives_a_restart_and_a_revoked_one_is_rejected() 
         Some(Error::AuthenticationRejected)
     );
     trace("Keycloak refused the revoked session even though it was still cached");
-    std::fs::remove_dir_all(&base).unwrap();
 }

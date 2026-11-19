@@ -208,6 +208,7 @@ dependencies = [
  "curl",
  "curl-sys",
  "html5gum",
+ "libc",
  "serde",
  "serde_json",
  "signature",

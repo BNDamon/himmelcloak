@@ -75,12 +75,16 @@ Priority 2 factors are built, and `AuthFlow::default()` is gone because only
 
 `himmelcloak::cache::TokenCache` keeps a verified session's `Tokens` across a process restart.
 `TokenCache::open(dir, key_file)` creates the cache directory (mode 0700) and a random 256-bit
-key (mode 0600) when they are missing; the key file's parent directory must exist. Both, and
-every entry, must belong to root with no access for group or others, or the call fails with
-`InvalidConfiguration`. `store(user, &tokens, expires_at)` encrypts the tokens with AES-256-GCM
+key (mode 0600) when they are missing. Both, and every entry, must belong to root with no access
+for group or others, or the call fails with `InvalidConfiguration`. The key file's parent
+directory must exist, belong to root, and not be writable by group or others, so no one else can
+delete the key and make the next open create a new one. Symlinks are never followed in place of
+the key or an entry. `store(user, &tokens, expires_at)` encrypts the tokens with AES-256-GCM
 and replaces that user's entry; an expiry that has already passed returns `Expired`, and tokens
 too large for `load` to accept return `InvalidConfiguration`, and both leave any earlier entry
-unchanged. `load(user)` returns `Ok(None)` when nothing is saved and `Expired` after the entry's
+unchanged. The caller picks `expires_at`; it is not tied to the tokens' own lifetimes, so it
+should not be later than the refresh token's expiry (Keycloak still rejects a session refreshed
+after that). `load(user)` returns `Ok(None)` when nothing is saved and `Expired` after the entry's
 expiry; the expired entry stays until the next `store` replaces it or `remove` deletes it. It
 returns `Crypto` when an entry fails AES-GCM verification (it was altered, written under another
 user's name, or sealed with a different key) and `Protocol` for a malformed or unsupported entry
